@@ -186,7 +186,7 @@ def show_add_strategy_dialog():
             st.warning("Strategy rule cannot be empty.")
 
 def render_chatbot_page():
-    col_header, col_new, col_clear = st.columns([2, 1, 1])
+    col_header, col_new = st.columns([3, 1])
     with col_header:
         st.header("💬 AI Research Assistant Chatbot")
         st.markdown("Interact with MarketPulse AI. The agent interprets your intent, manages qualitative strategies, runs debates, stress tests, or ingests files.")
@@ -211,18 +211,6 @@ def render_chatbot_page():
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to reset chat: {e}")
-                
-    with col_clear:
-        st.write("") # Spacer
-        if st.button("🗑️ Clear History", use_container_width=True):
-            try:
-                database.clear_chat_history()
-                st.session_state.chat_cleared = True
-                st.session_state.chat_history = []
-                st.toast("Cleared conversation history.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to clear history: {e}")
 
     st.markdown("---")
     
