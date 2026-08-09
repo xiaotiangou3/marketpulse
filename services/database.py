@@ -62,7 +62,7 @@ def run_migrations():
             conn.commit()
 
             # Find all SQL migrations
-            migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
+            migrations_dir = os.path.join(os.path.dirname(__file__), "..", "migrations")
             if not os.path.exists(migrations_dir):
                 print("Migrations directory does not exist. Skipping.")
                 return

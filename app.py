@@ -147,6 +147,10 @@ def render_portfolio_page():
             st.markdown("---")
             st.markdown("##### 📊 Asset Allocation: Cost Basis vs. Current Market Value")
             df = pd.DataFrame(metrics["holdings_details"])
+
+            df["position_cost"] = df["position_cost"].astype(float)
+            df["position_value"] = df["position_value"].astype(float)
+
             chart_df = df[["ticker", "position_cost", "position_value"]].rename(columns={
                 "position_cost": "Cost Basis Value ($)",
                 "position_value": "Current Market Value ($)"
@@ -160,6 +164,9 @@ def render_portfolio_page():
                 snapshots = database.get_portfolio_snapshots(limit=100)
                 if snapshots:
                     snap_df = pd.DataFrame(snapshots)
+
+                    snap_df["total_value"] = snap_df["total_value"].astype(float)
+
                     snap_df = snap_df[["recorded_at", "total_value"]].rename(columns={
                         "recorded_at": "Timestamp",
                         "total_value": "Portfolio Value ($)"
