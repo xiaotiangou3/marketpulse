@@ -6,6 +6,7 @@ from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
+from .orchestrator import generate_ai_response
 
 def generate_bull_perspective(ticker: str, holdings_str: str, news_str: str, strategy_str: str, docs_str: str) -> str:
     system_instruction = (

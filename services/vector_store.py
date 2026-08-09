@@ -16,6 +16,20 @@ def get_embedding_provider() -> providers.EmbeddingProvider:
         _embedding_provider = providers.GeminiEmbeddingProvider()
     return _embedding_provider
 
+HELP_MESSAGE = """### ⚡ MarketPulse AI Slash Commands & Actions
+
+You can trigger specific research sentinel actions using slash commands with optional natural language descriptions:
+
+| Command | Action | Example Description |
+| :--- | :--- | :--- |
+| **`/debate <description>`** | **Bull vs. Bear Debate & News Scan**<br>Synthesizes market news and weighs upside catalysts against downside risks. | • `/debate NVDA`<br>• `/debate talk about the bull and bear market based on the news for MSFT` |
+| **`/stress <description>`** | **Macro Risk Stress Test**<br>Simulates portfolio impact under specific economic scenarios. | • `/stress 50bps rate hike`<br>• `/stress evaluate what happens if oil prices surge` |
+| **`/performance`** | **Portfolio Performance & Valuation**<br>Calculates real-time portfolio value, daily P&L, and asset allocation breakdown. | • `/performance`<br>• `/performance summarize my top holdings and returns` |
+| **`/help`** | **Commands Reference**<br>Shows this reference guide. | • `/help` |
+
+💡 **Multi-Intent Support:** You can combine slash commands with other requests in a single prompt (e.g., `"/debate AAPL and also run a stress test on inflation"`).
+"""
+
 def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None) -> dict:
     """
     Structured chatbot assistant workflow:
@@ -25,6 +39,15 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     4. Logs session metadata and details in CockroachDB.
     """
     user_prompt = user_prompt.strip()
+    
+    # Instant response for /help
+    if user_prompt.lower() in ["/help", "/commands", "help", "/help commands"]:
+        return {
+            "response": HELP_MESSAGE,
+            "router": {"explanation": "Instant Slash Command Guide requested via /help.", "actions": []},
+            "actions_run": [{"type": "help", "status": "success"}]
+        }
+        
     has_file = bool(uploaded_files)
     start_time = time.time()
     
@@ -38,9 +61,18 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         print(f"Error fetching strategies for chatbot context: {e}")
         current_strats = []
         strategies_str = "Error fetching qualitative strategy guidelines."
+        
+    # Pre-fetch holdings context to assist router in picking ticker if unstated
+    try:
+        current_holdings = database.get_holdings()
+        holdings_str = ", ".join([f"{h['ticker']} ({h['shares']} shares)" for h in current_holdings]) if current_holdings else "No holdings in portfolio."
+    except Exception as e:
+        print(f"Error fetching holdings for chatbot context: {e}")
+        current_holdings = []
+        holdings_str = None
     
     print(f"Routing chatbot user prompt: '{user_prompt[:50]}...'")
-    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context)
+    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str)
     
     results = []
     actions_run = []
@@ -55,19 +87,23 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         
         if a_type == "debate":
             ticker = a.ticker.upper().strip() if a.ticker else None
+            if not ticker and current_holdings:
+                ticker = current_holdings[0]['ticker'].upper().strip()
+                
             if ticker:
                 try:
                     res = database.conduct_portfolio_analysis(ticker)
+                    synthesis_text = res.get('synthesis', str(res)) if isinstance(res, dict) else str(res)
                     results.append(
                         f"=== Portfolio News Scan & Debate for {ticker} ===\n"
-                        f"{res['synthesis']}\n"
+                        f"{synthesis_text}\n"
                     )
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "success"})
                 except Exception as e:
                     results.append(f"=== Debate for {ticker} Failed ===\nError: {e}\n")
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "error", "error": str(e)})
             else:
-                results.append("=== Debate Error ===\nTicker symbol was not specified by router.\n")
+                results.append("=== Debate Error ===\nStock ticker symbol was not specified and no portfolio holdings were found.\n")
                 actions_run.append({"type": "debate", "status": "missing_args"})
                 
         elif a_type == "stress_test":
@@ -324,9 +360,10 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
             if ticker:
                 try:
                     res = database.conduct_portfolio_analysis(ticker)
+                    synthesis_text = res.get('synthesis', str(res)) if isinstance(res, dict) else str(res)
                     results.append(
                         f"=== Portfolio News Scan & Debate for {ticker} ===\n"
-                        f"{res['synthesis']}\n"
+                        f"{synthesis_text}\n"
                     )
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "success"})
                 except Exception as e:

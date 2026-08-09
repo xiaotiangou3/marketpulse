@@ -2,6 +2,7 @@ import io
 import json
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import services.database as database
 import services
 import config
@@ -185,11 +186,262 @@ def show_add_strategy_dialog():
         else:
             st.warning("Strategy rule cannot be empty.")
 
+def inject_slash_command_palette():
+    palette_html = """
+    <style>
+        .mp-palette-popup {
+            position: absolute;
+            bottom: calc(100% + 10px);
+            left: 0;
+            right: 0;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid #334155;
+            border-radius: 12px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+            padding: 8px;
+            z-index: 999999;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-height: 290px;
+            overflow-y: auto;
+            backdrop-filter: blur(12px);
+        }
+        .mp-palette-header {
+            padding: 4px 8px 6px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            border-bottom: 1px solid #1e293b;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .mp-palette-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 2px;
+            border: 1px solid transparent;
+            transition: all 0.15s ease;
+        }
+        .mp-palette-item:hover, .mp-palette-item.active {
+            background: #1e293b;
+            border-color: #475569;
+        }
+    </style>
+    <script>
+    (function() {
+        const parentDoc = window.parent.document;
+        
+        const commands = [
+            {
+                cmd: "/debate",
+                template: "/debate ",
+                icon: "⚔️",
+                badge: "stock / topic",
+                title: "Bull vs. Bear Debate",
+                desc: "Debate upside catalysts vs downside risks based on news"
+            },
+            {
+                cmd: "/stress",
+                template: "/stress ",
+                icon: "🌪️",
+                badge: "macro scenario",
+                title: "Macro Stress Test",
+                desc: "Simulate portfolio impact under macro / economic shocks"
+            },
+            {
+                cmd: "/performance",
+                template: "/performance",
+                icon: "📊",
+                badge: "portfolio",
+                title: "Performance & Returns",
+                desc: "Calculate total portfolio valuation, P&L, and allocations"
+            },
+            {
+                cmd: "/help",
+                template: "/help",
+                icon: "💡",
+                badge: "guide",
+                title: "Commands Reference",
+                desc: "Display reference manual and example commands"
+            }
+        ];
+
+        let activeIndex = 0;
+        let visibleCommands = [];
+
+        function getOrCreatePalette() {
+            let palette = parentDoc.getElementById("mp-slash-palette");
+            if (!palette) {
+                palette = parentDoc.createElement("div");
+                palette.id = "mp-slash-palette";
+                palette.className = "mp-palette-popup";
+                palette.style.display = "none";
+                
+                const header = parentDoc.createElement("div");
+                header.className = "mp-palette-header";
+                header.innerHTML = "<span>⚡ MarketPulse Commands</span><span>↑↓ Navigate • Tab/Click Select • Esc Close</span>";
+                palette.appendChild(header);
+
+                const listContainer = parentDoc.createElement("div");
+                listContainer.id = "mp-palette-list";
+                palette.appendChild(listContainer);
+            }
+            return palette;
+        }
+
+        function setNativeValue(element, value) {
+            const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+            const prototype = Object.getPrototypeOf(element);
+            const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+            
+            if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+                prototypeValueSetter.call(element, value);
+            } else if (valueSetter) {
+                valueSetter.call(element, value);
+            } else {
+                element.value = value;
+            }
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        function selectCommand(textarea, cmdObj) {
+            setNativeValue(textarea, cmdObj.template);
+            hidePalette();
+            setTimeout(() => {
+                textarea.focus();
+                textarea.setSelectionRange(cmdObj.template.length, cmdObj.template.length);
+            }, 50);
+        }
+
+        function renderItems(textarea) {
+            const palette = getOrCreatePalette();
+            const list = palette.querySelector("#mp-palette-list");
+            if (!list) return;
+            list.innerHTML = "";
+
+            visibleCommands.forEach((cmd, idx) => {
+                const item = parentDoc.createElement("div");
+                item.className = "mp-palette-item" + (idx === activeIndex ? " active" : "");
+
+                item.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 16px;">${cmd.icon}</span>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <span style="font-weight: 700; font-size: 13px; color: #38bdf8;">${cmd.cmd}</span>
+                                <span style="font-size: 11px; background: #334155; color: #cbd5e1; padding: 1px 6px; border-radius: 4px; font-family: monospace;">${cmd.badge}</span>
+                            </div>
+                            <div style="font-size: 12px; color: #94a3b8; margin-top: 1px;">${cmd.desc}</div>
+                        </div>
+                    </div>
+                `;
+
+                item.addEventListener("mouseenter", () => {
+                    activeIndex = idx;
+                    renderItems(textarea);
+                });
+
+                item.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    selectCommand(textarea, cmd);
+                });
+
+                list.appendChild(item);
+            });
+        }
+
+        function showPalette(textarea) {
+            const palette = getOrCreatePalette();
+            const container = textarea.closest('div[data-testid="stChatInput"]') || textarea.parentElement;
+            if (container) {
+                if (container.style.position !== "relative" && container.style.position !== "absolute") {
+                    container.style.position = "relative";
+                }
+                if (!container.contains(palette)) {
+                    container.appendChild(palette);
+                }
+                renderItems(textarea);
+                palette.style.display = "block";
+            }
+        }
+
+        function hidePalette() {
+            const palette = parentDoc.getElementById("mp-slash-palette");
+            if (palette) {
+                palette.style.display = "none";
+            }
+        }
+
+        function attachListener() {
+            const textarea = parentDoc.querySelector('div[data-testid="stChatInput"] textarea') || parentDoc.querySelector('[data-testid="stChatInputTextArea"]');
+            if (!textarea || textarea.dataset.slashBound === "true") return;
+
+            textarea.dataset.slashBound = "true";
+
+            textarea.addEventListener("input", () => {
+                const val = textarea.value;
+                if (val.startsWith("/")) {
+                    const search = val.trim().toLowerCase();
+                    visibleCommands = commands.filter(c => c.cmd.toLowerCase().startsWith(search) || search === "/" || c.cmd.toLowerCase().includes(search));
+                    if (visibleCommands.length > 0) {
+                        activeIndex = 0;
+                        showPalette(textarea);
+                    } else {
+                        hidePalette();
+                    }
+                } else {
+                    hidePalette();
+                }
+            });
+
+            textarea.addEventListener("keydown", (e) => {
+                const palette = parentDoc.getElementById("mp-slash-palette");
+                const isOpen = palette && palette.style.display === "block";
+
+                if (isOpen) {
+                    if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        activeIndex = (activeIndex + 1) % visibleCommands.length;
+                        renderItems(textarea);
+                    } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        activeIndex = (activeIndex - 1 + visibleCommands.length) % visibleCommands.length;
+                        renderItems(textarea);
+                    } else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && textarea.value.trim().indexOf(" ") === -1 && visibleCommands.length > 0)) {
+                        if (visibleCommands[activeIndex] && textarea.value.trim() !== visibleCommands[activeIndex].template.trim()) {
+                            e.preventDefault();
+                            selectCommand(textarea, visibleCommands[activeIndex]);
+                        }
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        hidePalette();
+                    }
+                }
+            });
+
+            textarea.addEventListener("blur", () => {
+                setTimeout(hidePalette, 250);
+            });
+        }
+
+        attachListener();
+        setInterval(attachListener, 1000);
+    })();
+    </script>
+    """
+    components.html(palette_html, height=0, width=0)
+
 def render_chatbot_page():
     col_header, col_new = st.columns([3, 1])
     with col_header:
         st.header("💬 AI Research Assistant Chatbot")
-        st.markdown("Interact with MarketPulse AI. The agent interprets your intent, manages qualitative strategies, runs debates, stress tests, or ingests files.")
+        st.markdown("Interact with MarketPulse AI using natural language or slash commands (e.g. `/debate`, `/stress`, `/performance`, `/help`).")
     
     with col_new:
         st.write("") # Spacer to align buttons slightly lower
@@ -199,11 +451,12 @@ def render_chatbot_page():
                 st.session_state.chat_cleared = False
                 greeting = (
                     "Hello! I am MarketPulse AI. How can I help you research your portfolio or manage your investment strategies today?\n\n"
-                    "Try asking me:\n"
+                    "💡 **Try typing `/` in the chat bar or asking:**\n"
+                    "- *'/debate talk about the bull and bear catalysts for NVDA based on news'*\n"
+                    "- *'/stress analyze what happens if interest rates rise 50bps'*\n"
+                    "- *'/performance'*\n"
                     "- *'Add a strategy to limit tech to 30%'*\n"
-                    "- *'Show my active strategies'*\n"
-                    "- *'Delete the technology strategy rule'*\n"
-                    "- *'Run a debate on MSFT'*"
+                    "- *'/help' for full commands guide*"
                 )
                 database.save_chat_message(role="assistant", content=greeting)
                 st.session_state.chat_history = [{"role": "assistant", "content": greeting}]
@@ -324,9 +577,10 @@ def render_chatbot_page():
         # Chat Input - disabled if strategy pending user decision
         is_pending = bool(st.session_state.get("pending_strategy"))
         
+        inject_slash_command_palette()
         # Requires Streamlit 1.37.0+
         user_input_data = st.chat_input(
-            "Ask MarketPulse AI...", 
+            "Ask MarketPulse AI or type '/' for commands...", 
             disabled=is_pending,
             accept_file="multiple"
         )
@@ -337,11 +591,20 @@ def render_chatbot_page():
             file_context_texts = []
             
             if isinstance(user_input_data, dict):
-                user_prompt = user_input_data.get("text", "").strip()
-                st_files = user_input_data.get("files", [])
-            else:
-                user_prompt = str(user_input_data).strip()
+                user_prompt = str(user_input_data.get("text") or "").strip()
+                st_files = user_input_data.get("files", []) or []
+            elif hasattr(user_input_data, "text"):
+                user_prompt = str(getattr(user_input_data, "text", "") or "").strip()
+                st_files = getattr(user_input_data, "files", []) or []
+            elif isinstance(user_input_data, str):
+                user_prompt = user_input_data.strip()
                 st_files = []
+            else:
+                try:
+                    user_prompt = str(getattr(user_input_data, "text", "")).strip()
+                except Exception:
+                    user_prompt = ""
+                st_files = getattr(user_input_data, "files", []) or []
                 
             for f in st_files:
                 f_bytes = f.getvalue()

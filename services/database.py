@@ -863,7 +863,7 @@ def conduct_portfolio_analysis(ticker):
         print(f"Warning: Semantic document chunks search failed: {e}")
         
     print("Orchestrating parallel Bull vs. Bear debate...")
-    debate_res = agent.run_parallel_debate(ticker, news, strategies_context, docs_context)
+    debate_res = agent.run_parallel_debate(ticker, full_holdings_context, news, strategies_context, docs_context)
     
     print("Synthesizing debate cases...")
     synthesis = agent.synthesize_debate(ticker, debate_res['bull'], debate_res['bear'])

@@ -44,6 +44,27 @@ def generate_ai_response(prompt: str, system_instruction: str = None) -> str:
     )
     return response.text
 
+class ActionItem(BaseModel):
+    action_type: str = Field(
+        description="Must be one of: 'debate', 'stress_test', 'ingest', 'performance_analysis', 'add_strategy', 'delete_strategy', 'update_strategy', 'list_strategies', or 'none'"
+    )
+    ticker: Optional[str] = Field(
+        None, 
+        description="Ticker symbol (capitalized, e.g. 'MSFT') if action_type is 'debate' or 'ingest'"
+    )
+    scenario: Optional[str] = Field(
+        None, 
+        description="Scenario description if action_type is 'stress_test'"
+    )
+    strategy_text: Optional[str] = Field(
+        None,
+        description="New or updated strategy text if action_type is 'add_strategy' or 'update_strategy'. Keep it concise and avoid repeating phrases."
+    )
+    strategy_target: Optional[str] = Field(
+        None,
+        description="Keep it extremely short: strictly either a rule number (e.g. '1') or a short 2-3 word keyword (e.g. 'tech limit'). Do not write long explanations or repeat phrases."
+    )
+
 class RouterOutput(BaseModel):
     explanation: str = Field(
         description="Brief sentence explaining what the user wants and how we will route it. Keep it concise."
@@ -53,32 +74,40 @@ class RouterOutput(BaseModel):
     )
 
 @llm_retry
-def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: str = None) -> RouterOutput:
+def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: str = None, holdings_str: str = None) -> RouterOutput:
     client = get_gemini_client()
     
     system_instruction = (
-        "You are an AI Routing Assistant for a financial system. "
-        "Your task is to parse the user's prompt and decompose it into a structured plan "
-        "of actions to run. Supported actions:\n"
-        "1. 'debate': Ticker research scan (requires a stock ticker symbol like MSFT, AAPL, etc.).\n"
-        "2. 'stress_test': Macro risk stress test (requires a macro scenario description like rate hikes, oil price drops, etc.).\n"
-        "3. 'ingest': PDF transcript uploading (requires a stock ticker symbol. Note: This action should only be triggered if a file has been uploaded, as indicated by the has_uploaded_file context).\n"
-        "4. 'performance_analysis': Calculate and return total portfolio valuation, daily price changes, gains, losses, or historical value trends.\n"
+        "You are an AI Routing Assistant for the MarketPulse AI financial system. "
+        "Your task is to parse the user's prompt (which may contain slash commands like /debate, /stress, /performance, /help, or freeform natural language) "
+        "and decompose it into a structured sequence of actions to execute.\n\n"
+        "### SLASH COMMANDS & ACTIONS:\n"
+        "1. 'debate': Triggered by '/debate <description>' or natural language requesting a Bull vs. Bear debate, stock analysis, or news catalysts.\n"
+        "   - The user may write a detailed natural language description after /debate (e.g., '/debate talk about the bull and bear market based on the news for NVDA').\n"
+        "   - Extract the stock ticker symbol mentioned or implied (e.g. MSFT, AAPL, NVDA). Convert to uppercase ticker symbol.\n"
+        "   - If no specific ticker is mentioned in the prompt, pick the primary ticker from the user's active holdings context.\n"
+        "2. 'stress_test': Triggered by '/stress <description>', '/stress_test <description>', or natural language asking about macro scenarios, interest rate hikes, inflation shocks, recessions, oil price surges, etc.\n"
+        "   - Extract the full scenario text into the 'scenario' field (e.g. 'Federal Reserve hikes interest rates 50bps and oil surges').\n"
+        "3. 'performance_analysis': Triggered by '/performance', '/portfolio', or natural language asking for portfolio valuation, P&L, returns, gains/losses, or performance breakdown.\n"
+        "4. 'ingest': PDF transcript uploading (requires a stock ticker symbol. Note: This action should only be triggered if a file has been uploaded, as indicated by has_uploaded_file).\n"
         "5. 'add_strategy': Add a new qualitative investment strategy guideline (requires strategy_text, e.g. 'Limit technology exposure to 40%'). Keep strategy_text concise.\n"
         "6. 'delete_strategy': Delete/remove an existing qualitative strategy guideline (requires strategy_target, which must strictly be the index/number or a short 2-3 word keyword of the rule to delete).\n"
-        "7. 'update_strategy': Update/modify an existing strategy guideline (requires strategy_target which must strictly be the index/number or a short 2-3 word keyword, and strategy_text for the new wording).\n"
-        "8. 'list_strategies': Show or list all currently configured strategy guidelines.\n"
-        "If the user asks to add, delete, update, modify, or list strategies, you must route them to the corresponding strategy action instead of 'none'.\n"
-        "For strategy_text, you must strictly extract the new wording based on the user's prompt. Do NOT hallucinate, change, or substitute any numbers, percentages, or specifics mentioned by the user (e.g. if the user says 'to 20 percent', your strategy_text must reflect '20 percent' or '20%', not '15%').\n"
-        "Ensure all action properties (strategy_text, strategy_target, explanation) are clean, extremely concise, and contain absolutely no repetitive or looping text sequences.\n"
-        "If a prompt is conversational or none of these actions fit, output 'none' as action_type.\n"
-        "If a user asks to run multiple actions, output them in the sequential order they should execute."
+        "7. 'update_strategy': Update/modify an existing strategy guideline (requires strategy_target and strategy_text for the new wording).\n"
+        "8. 'list_strategies': Show or list all currently configured strategy guidelines.\n\n"
+        "### MULTI-INTENT & HYBRID PROMPTS:\n"
+        "- Users can combine slash commands with additional requests in the same prompt (e.g., '/debate MSFT and also run a stress test on inflation spike').\n"
+        "- You must identify ALL requested actions and return them in the sequential order they should execute.\n"
+        "- If a prompt is purely conversational with no actions needed, output 'none' as action_type.\n"
+        "- For strategy_text, extract the exact wording based on the user's prompt without hallucinating or altering numbers/percentages.\n"
+        "- Ensure all action properties are clean, concise, and contain no repetitive looping text."
     )
     
     prompt = (
         f"User Prompt: \"{user_prompt}\"\n"
         f"Has Uploaded File Context: {has_uploaded_file}\n"
     )
+    if holdings_str:
+        prompt += f"### USER CURRENT PORTFOLIO HOLDINGS ###\n{holdings_str}\n"
     if file_context:
         prompt += f"### UPLOADED FILE CONTEXT ###\n{file_context}\n"
     

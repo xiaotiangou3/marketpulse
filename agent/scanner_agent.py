@@ -12,26 +12,7 @@ llm_retry = retry(
     wait=wait_exponential(multiplier=1, min=2, max=10)
 )
 
-class ActionItem(BaseModel):
-    action_type: str = Field(
-        description="Must be one of: 'debate', 'stress_test', 'ingest', 'performance_analysis', 'add_strategy', 'delete_strategy', 'update_strategy', 'list_strategies', or 'none'"
-    )
-    ticker: Optional[str] = Field(
-        None, 
-        description="Ticker symbol (capitalized, e.g. 'MSFT') if action_type is 'debate' or 'ingest'"
-    )
-    scenario: Optional[str] = Field(
-        None, 
-        description="Scenario description if action_type is 'stress_test'"
-    )
-    strategy_text: Optional[str] = Field(
-        None,
-        description="New or updated strategy text if action_type is 'add_strategy' or 'update_strategy'. Keep it concise and avoid repeating phrases."
-    )
-    strategy_target: Optional[str] = Field(
-        None,
-        description="Keep it extremely short: strictly either a rule number (e.g. '1') or a short 2-3 word keyword (e.g. 'tech limit'). Do not write long explanations or repeat phrases."
-    )
+from .orchestrator import ActionItem, generate_ai_response
 
 @llm_retry
 def generate_news_suggestions(news_title: str, news_summary: str, holdings_str: str, strategies_str: str) -> str:
