@@ -1,5 +1,6 @@
 import io
 import json
+import time
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -546,18 +547,35 @@ def render_chatbot_page():
                             # Check and execute remaining actions
                             remaining = pending.get("remaining_actions")
                             if remaining:
-                                with st.spinner("Executing remaining portfolio actions..."):
-                                    res_remaining = services.run_remaining_actions(remaining, pending["original_prompt"])
-                                    final_content = res_remaining["response"]
-                                    
-                                    st.session_state.chat_history.append({
-                                        "role": "assistant",
-                                        "content": final_content
-                                    })
-                                    try:
-                                        database.save_chat_message(role="assistant", content=final_content)
-                                    except Exception as e:
-                                        print(f"Error persisting remaining actions response: {e}")
+                                with chat_container:
+                                    with st.chat_message("assistant"):
+                                        rem_status = st.status("🔄 Resuming portfolio actions...", expanded=True)
+                                        def handle_rem_status(label: str, detail: str = None, state: str = "running"):
+                                            rem_status.update(label=label, state=state)
+                                            if detail:
+                                                with rem_status:
+                                                    st.write(detail)
+                                        try:
+                                            res_remaining = services.run_remaining_actions(remaining, pending["original_prompt"], status_callback=handle_rem_status)
+                                            rem_status.update(label="✅ Continuation actions complete", state="complete", expanded=False)
+                                            final_content = res_remaining["response"]
+                                            def stream_words(text: str):
+                                                words = text.split(" ")
+                                                for i, word in enumerate(words):
+                                                    yield word + (" " if i < len(words) - 1 else "")
+                                                    time.sleep(0.008)
+                                            st.write_stream(stream_words(final_content))
+                                            st.session_state.chat_history.append({
+                                                "role": "assistant",
+                                                "content": final_content
+                                            })
+                                            try:
+                                                database.save_chat_message(role="assistant", content=final_content)
+                                            except Exception as e:
+                                                print(f"Error persisting remaining actions response: {e}")
+                                        except Exception as e:
+                                            rem_status.update(label="❌ Continuation actions failed", state="error", expanded=True)
+                                            st.error(f"Failed to complete actions: {e}")
                                         
                             del st.session_state.pending_strategy
                             st.toast("Strategy saved and actions executed successfully!")
@@ -641,23 +659,47 @@ def render_chatbot_page():
                 print(f"Error persisting user message: {e}")
             st.session_state.chat_history.append({"role": "user", "content": display_prompt})
             
-            with st.spinner("MarketPulse AI is processing and orchestrating tools..."):
-                try:
-                    res = services.run_chatbot_session(user_prompt, uploaded_files=uploaded_files_list, file_context=file_context)
-                    
+            with chat_container:
+                with st.chat_message("user"):
+                    st.markdown(display_prompt)
+                with st.chat_message("assistant"):
+                    status_box = st.status("🧠 MarketPulse AI is initializing...", expanded=True)
+                    def handle_status(label: str, detail: str = None, state: str = "running"):
+                        status_box.update(label=label, state=state)
+                        if detail:
+                            with status_box:
+                                st.write(detail)
                     try:
-                        database.save_chat_message(role="assistant", content=res["response"])
+                        res = services.run_chatbot_session(
+                            user_prompt, 
+                            uploaded_files=uploaded_files_list, 
+                            file_context=file_context,
+                            status_callback=handle_status
+                        )
+                        status_box.update(label="✅ Analysis & execution complete", state="complete", expanded=False)
+                        
+                        def stream_words(text: str):
+                            words = text.split(" ")
+                            for i, word in enumerate(words):
+                                yield word + (" " if i < len(words) - 1 else "")
+                                time.sleep(0.008)
+                                
+                        st.write_stream(stream_words(res["response"]))
+                        
+                        try:
+                            database.save_chat_message(role="assistant", content=res["response"])
+                        except Exception as e:
+                            print(f"Error persisting assistant message: {e}")
+                        
+                        # Append assistant response
+                        st.session_state.chat_history.append({"role": "assistant", "content": res["response"]})
+                        st.session_state.last_router_output = res["router"]
+                        if res.get("pending_strategy"):
+                            st.session_state.pending_strategy = res["pending_strategy"]
+                        st.rerun()
                     except Exception as e:
-                        print(f"Error persisting assistant message: {e}")
-                    
-                    # Append assistant response
-                    st.session_state.chat_history.append({"role": "assistant", "content": res["response"]})
-                    st.session_state.last_router_output = res["router"]
-                    if res.get("pending_strategy"):
-                        st.session_state.pending_strategy = res["pending_strategy"]
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Chatbot failed to process request: {e}")
+                        status_box.update(label="❌ Error processing request", state="error", expanded=True)
+                        st.error(f"Chatbot failed to process request: {e}")
                     
     with col2:
         st.subheader("🎯 Active Strategy Rules")

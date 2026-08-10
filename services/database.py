@@ -1,6 +1,7 @@
 
 import time
 import threading
+from typing import Callable, Optional
 import yfinance as yf
 import agent
 from .vector_store import get_embedding_provider
@@ -756,7 +757,9 @@ def calculate_performance_metrics():
         'holdings_details': holdings_details
     }
 
-def get_portfolio_performance_summary():
+def get_portfolio_performance_summary(status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
+    if status_callback:
+        status_callback("📈 Computing portfolio performance metrics...", "Fetching latest market quotes and calculating valuation & returns...")
     metrics = calculate_performance_metrics()
     if metrics['total_cost'] == 0.0:
         return 'Your portfolio is currently empty. Add positions to calculate performance.'
@@ -768,9 +771,11 @@ def get_portfolio_performance_summary():
         
     return summary
 
-def execute_stress_test(scenario_prompt):
+def execute_stress_test(scenario_prompt, status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
     start_time = time.time()
     print(f"Executing macro stress test for scenario: '{scenario_prompt}'...")
+    if status_callback:
+        status_callback("📊 Loading active portfolio holdings & strategy rules...", "Querying CockroachDB relational engine...")
     holdings = get_holdings()
     
     holdings_str = ''
@@ -786,6 +791,8 @@ def execute_stress_test(scenario_prompt):
     if not strategies_str:
         strategies_str = "No strategy rules configured."
         
+    if status_callback:
+        status_callback("⚡ Simulating macro shock impact via Gemini...", f"Evaluating scenario: '{scenario_prompt}' against portfolio assets...")
     stress_report = agent.run_macro_stress_test(scenario_prompt, holdings_str, strategies_str)
     
     elapsed_time = round(time.time() - start_time, 2)
@@ -796,6 +803,8 @@ def execute_stress_test(scenario_prompt):
         "type": "macro_stress_test"
     }
     
+    if status_callback:
+        status_callback("💾 Saving stress test audit log...", "Logging report to CockroachDB with 30-day Row-Level TTL...")
     log_research_session(
         prompt_query=f"Macro Stress Test: {scenario_prompt}",
         retrieved_news="N/A",
@@ -808,11 +817,13 @@ def execute_stress_test(scenario_prompt):
     
     return stress_report
 
-def conduct_portfolio_analysis(ticker):
+def conduct_portfolio_analysis(ticker, status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
     ticker = ticker.upper().strip()
     start_time = time.time()
     print(f"Starting research synthesis workflow for {ticker}...")
     
+    if status_callback:
+        status_callback(f"📊 Loading portfolio context for {ticker}...", "Querying user_holdings table from CockroachDB...")
     holdings = get_holdings()
     ticker_holding = next((h for h in holdings if h['ticker'] == ticker), None)
     
@@ -831,6 +842,8 @@ def conduct_portfolio_analysis(ticker):
     
     strategies_context = "No strategy rules configured."
     try:
+        if status_callback:
+            status_callback(f"🔍 Searching qualitative strategy vectors for {ticker}...", "Generating 768-dim embedding & querying CockroachDB HNSW index...")
         from .vector_store import get_embedding_provider
         query_embed = get_embedding_provider().get_embedding(query_text)
         matching_strategies = search_strategies_semantic(query_embed, limit=5)
@@ -843,6 +856,8 @@ def conduct_portfolio_analysis(ticker):
         
     news = "No news found for this ticker."
     try:
+        if status_callback:
+            status_callback(f"🌐 Fetching real-time market news for {ticker}...", "Gathering latest headlines and financial catalyst updates...")
         fetch_and_store_news(ticker)
         n = get_stored_news(ticker, limit=5)
         if n:
@@ -854,6 +869,8 @@ def conduct_portfolio_analysis(ticker):
         
     docs_context = "No uploaded earnings transcripts or documents found for this ticker."
     try:
+        if status_callback:
+            status_callback(f"📄 Searching document transcripts for {ticker}...", "Running vector similarity search across document_chunks...")
         matching_chunks = search_document_chunks_semantic(ticker, query_embed, limit=5)
         if matching_chunks:
             docs_context = ''
@@ -863,9 +880,13 @@ def conduct_portfolio_analysis(ticker):
         print(f"Warning: Semantic document chunks search failed: {e}")
         
     print("Orchestrating parallel Bull vs. Bear debate...")
+    if status_callback:
+        status_callback(f"⚔️ Dispatching Bull vs. Bear debate agents for {ticker}...", "Executing dual-agent reasoning for catalysts and downside risks...")
     debate_res = agent.run_parallel_debate(ticker, full_holdings_context, news, strategies_context, docs_context)
     
     print("Synthesizing debate cases...")
+    if status_callback:
+        status_callback(f"📝 Synthesizing debate cases for {ticker}...", "Evaluating bull/bear arguments against qualitative strategy guidelines...")
     synthesis = agent.synthesize_debate(ticker, debate_res['bull'], debate_res['bear'])
     
     elapsed_time = round(time.time() - start_time, 2)
@@ -878,6 +899,8 @@ def conduct_portfolio_analysis(ticker):
     }
     
     print("Logging research session into CockroachDB...")
+    if status_callback:
+        status_callback(f"💾 Saving research audit log with Row-Level TTL...", "Persisting session to research_audit_logs table...")
     log_research_session(
         prompt_query=f"Portfolio research scan for {ticker}",
         retrieved_news=news[:500] + '...' if len(news) > 500 else news,

@@ -1,6 +1,6 @@
 import json
 import concurrent.futures
-from typing import List, Optional
+from typing import List, Optional, Callable
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -74,7 +74,9 @@ class RouterOutput(BaseModel):
     )
 
 @llm_retry
-def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: str = None, holdings_str: str = None) -> RouterOutput:
+def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: str = None, holdings_str: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> RouterOutput:
+    if status_callback:
+        status_callback("🧠 Parsing prompt & analyzing intent...", "Evaluating query against portfolio context, rules, and slash commands...")
     client = get_gemini_client()
     
     system_instruction = (
@@ -123,7 +125,12 @@ def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: s
     )
     
     try:
-        return RouterOutput.model_validate_json(response.text)
+        output = RouterOutput.model_validate_json(response.text)
+        if status_callback:
+            action_names = [a.action_type for a in output.actions if a.action_type.lower() != "none"]
+            summary = f"Identified {len(action_names)} action(s): {', '.join(action_names)}" if action_names else "Identified conversational query"
+            status_callback("🎯 Plan determined", summary)
+        return output
     except Exception as e:
         print(f"Error parsing router JSON output: {response.text}, error: {e}")
         return RouterOutput(explanation="Fallback routing due to parse error.", actions=[])
@@ -173,7 +180,9 @@ def resolve_strategy_match(target: str, current_strategies: List[dict]) -> Optio
     return None
 
 @llm_retry
-def generate_conversational_response(user_prompt: str, strategies_str: str, file_context: str = None) -> str:
+def generate_conversational_response(user_prompt: str, strategies_str: str, file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> str:
+    if status_callback:
+        status_callback("💬 Formulating conversational response...", "Aligning guidance with active qualitative investment strategy guidelines...")
     system_instruction = (
         "You are MarketPulse AI, a professional financial assistant. "
         "Always evaluate and adhere to the active qualitative strategy rules listed below when answering user queries. "
@@ -193,7 +202,9 @@ def generate_conversational_response(user_prompt: str, strategies_str: str, file
     return generate_ai_response(prompt, system_instruction)
 
 @llm_retry
-def synthesize_chat_response(user_prompt: str, results_summary: str, strategies_str: str = "", file_context: str = None) -> str:
+def synthesize_chat_response(user_prompt: str, results_summary: str, strategies_str: str = "", file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> str:
+    if status_callback:
+        status_callback("📝 Synthesizing investment insights...", "Synthesizing multi-agent outputs and testing strategy constraints...")
     system_instruction = (
         "You are a friendly, highly professional AI Investment Assistant named MarketPulse AI. "
         "You have executed tools (debates, macro stress tests, document ingestion, or strategy modifications) to satisfy the user's request. "

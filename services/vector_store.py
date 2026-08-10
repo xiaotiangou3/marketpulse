@@ -2,6 +2,7 @@ import services.storage_service as storage
 import time
 import datetime
 import threading
+from typing import Callable, Optional
 import yfinance as yf
 from google.genai import errors
 import services.database as database
@@ -30,7 +31,7 @@ You can trigger specific research sentinel actions using slash commands with opt
 💡 **Multi-Intent Support:** You can combine slash commands with other requests in a single prompt (e.g., `"/debate AAPL and also run a stress test on inflation"`).
 """
 
-def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None) -> dict:
+def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """
     Structured chatbot assistant workflow:
     1. Parses user's request into structured action items.
@@ -42,6 +43,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     
     # Instant response for /help
     if user_prompt.lower() in ["/help", "/commands", "help", "/help commands"]:
+        if status_callback:
+            status_callback("⚡ Displaying Slash Command Guide...", "Showing available slash commands and usage examples")
         return {
             "response": HELP_MESSAGE,
             "router": {"explanation": "Instant Slash Command Guide requested via /help.", "actions": []},
@@ -51,6 +54,9 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     has_file = bool(uploaded_files)
     start_time = time.time()
     
+    if status_callback:
+        status_callback("🔍 Loading context & investment rules...", "Retrieving active portfolio holdings and qualitative strategy rules from CockroachDB...")
+        
     # Pre-fetch strategies context to ensure chatbot is aware of active guidelines
     try:
         current_strats = database.get_strategies()
@@ -72,7 +78,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         holdings_str = None
     
     print(f"Routing chatbot user prompt: '{user_prompt[:50]}...'")
-    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str)
+    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str, status_callback=status_callback)
     
     results = []
     actions_run = []
@@ -91,8 +97,10 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 ticker = current_holdings[0]['ticker'].upper().strip()
                 
             if ticker:
+                if status_callback:
+                    status_callback(f"⚔️ Initiating research scan & Bull vs. Bear debate for {ticker}...", f"Scanning news and analyzing catalysts for {ticker}...")
                 try:
-                    res = database.conduct_portfolio_analysis(ticker)
+                    res = database.conduct_portfolio_analysis(ticker, status_callback=status_callback)
                     synthesis_text = res.get('synthesis', str(res)) if isinstance(res, dict) else str(res)
                     results.append(
                         f"=== Portfolio News Scan & Debate for {ticker} ===\n"
@@ -102,6 +110,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 except Exception as e:
                     results.append(f"=== Debate for {ticker} Failed ===\nError: {e}\n")
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Debate for {ticker} encountered an issue", f"Error: {e}")
             else:
                 results.append("=== Debate Error ===\nStock ticker symbol was not specified and no portfolio holdings were found.\n")
                 actions_run.append({"type": "debate", "status": "missing_args"})
@@ -109,8 +119,10 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         elif a_type == "stress_test":
             scenario = a.scenario
             if scenario:
+                if status_callback:
+                    status_callback(f"⚡ Running macro stress test...", f"Evaluating scenario: '{scenario}'...")
                 try:
-                    report = database.execute_stress_test(scenario)
+                    report = database.execute_stress_test(scenario, status_callback=status_callback)
                     results.append(
                         f"=== Macro Stress Test Report ===\n"
                         f"Scenario: {scenario}\n"
@@ -120,6 +132,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 except Exception as e:
                     results.append(f"=== Stress Test Failed ===\nError: {e}\n")
                     actions_run.append({"type": "stress_test", "scenario": scenario, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Stress test encountered an issue", f"Error: {e}")
             else:
                 results.append("=== Stress Test Error ===\nScenario description was not specified by router.\n")
                 actions_run.append({"type": "stress_test", "status": "missing_args"})
@@ -130,6 +144,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 success_count = 0
                 for f_info in uploaded_files:
                     if f_info["name"].lower().endswith(".pdf"):
+                        if status_callback:
+                            status_callback(f"📄 Ingesting and vector indexing transcript '{f_info['name']}'...", f"Chunking and embedding document for {ticker} into CockroachDB...")
                         try:
                             storage.ingest_pdf_transcript(f_info["name"], f_info["bytes"], ticker)
                             results.append(
@@ -141,6 +157,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                         except Exception as e:
                             results.append(f"=== Ingestion Failed ({f_info['name']}) ===\nError: {e}\n")
                             actions_run.append({"type": "ingest", "ticker": ticker, "file": f_info["name"], "status": "error", "error": str(e)})
+                            if status_callback:
+                                status_callback(f"⚠️ Transcript ingestion failed for {f_info['name']}", f"Error: {e}")
                 if success_count == 0:
                     results.append("=== Ingestion Warning ===\nNo PDF files were uploaded to ingest. Non-PDF files were provided as context.\n")
             elif not uploaded_files:
@@ -155,17 +173,23 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 actions_run.append({"type": "ingest", "status": "missing_ticker"})
                 
         elif a_type == "performance_analysis":
+            if status_callback:
+                status_callback("📈 Computing portfolio performance & valuation...", "Querying portfolio holdings and latest stock prices...")
             try:
-                perf_report = database.get_portfolio_performance_summary()
+                perf_report = database.get_portfolio_performance_summary(status_callback=status_callback)
                 results.append(perf_report)
                 actions_run.append({"type": "performance_analysis", "status": "success"})
             except Exception as e:
                 results.append(f"=== Performance Analysis Failed ===\nError: {e}\n")
                 actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
+                if status_callback:
+                    status_callback("⚠️ Performance analysis encountered an issue", f"Error: {e}")
 
         elif a_type == "add_strategy":
             strategy_text = a.strategy_text
             if strategy_text:
+                if status_callback:
+                    status_callback("🎯 Drafting qualitative strategy rule...", f"Drafted rule: '{strategy_text}' (pending user confirmation)")
                 remaining_actions = []
                 current_action_idx = router_output.actions.index(a)
                 for rem_a in router_output.actions[current_action_idx+1:]:
@@ -198,6 +222,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         elif a_type == "delete_strategy":
             target = a.strategy_target
             if target:
+                if status_callback:
+                    status_callback("🗑️ Resolving and deleting strategy guideline...", f"Searching strategy guideline matching '{target}'...")
                 try:
                     matching_id = agent.resolve_strategy_match(target, current_strats)
                     if matching_id:
@@ -208,6 +234,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                             f"Successfully removed strategy guideline: '{matched_s['strategy_text']}'\n"
                         )
                         actions_run.append({"type": "delete_strategy", "strategy_target": target, "status": "success"})
+                        if status_callback:
+                            status_callback("✅ Strategy rule removed", f"Deleted: '{matched_s['strategy_text']}'")
                     else:
                         results.append(
                             f"=== Delete Strategy Warning ===\n"
@@ -225,6 +253,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
             target = a.strategy_target
             new_text = a.strategy_text
             if target:
+                if status_callback:
+                    status_callback("✏️ Resolving and drafting strategy update...", f"Updating rule matching '{target}'...")
                 try:
                     matching_id = agent.resolve_strategy_match(target, current_strats)
                     if matching_id:
@@ -275,6 +305,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 actions_run.append({"type": "update_strategy", "status": "missing_args"})
 
         elif a_type == "list_strategies":
+            if status_callback:
+                status_callback("📋 Listing configured qualitative strategies...", "Querying strategy guidelines from CockroachDB...")
             try:
                 if current_strats:
                     str_list = "\n".join([f"{idx+1}. {s['strategy_text']}" for idx, s in enumerate(current_strats)])
@@ -292,11 +324,11 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     results_summary = "\n".join(results)
     if not results_summary:
         print("Executing conversational direct response...")
-        final_response = agent.generate_conversational_response(user_prompt, strategies_str, file_context)
+        final_response = agent.generate_conversational_response(user_prompt, strategies_str, file_context, status_callback=status_callback)
         actions_run.append({"type": "conversational"})
     else:
         print("Synthesizing workflow actions results into chatbot response...")
-        final_response = agent.synthesize_chat_response(user_prompt, results_summary, strategies_str, file_context)
+        final_response = agent.synthesize_chat_response(user_prompt, results_summary, strategies_str, file_context, status_callback=status_callback)
         
     elapsed = time.time() - start_time
     session_metadata = {
@@ -328,13 +360,16 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         "pending_strategy": pending_strategy
     }
 
-def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict:
+def run_remaining_actions(remaining_actions: list, original_prompt: str, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """
     Executes a list of remaining actions sequentially and returns the final synthesized response and metadata.
     Factors in the newly updated database state.
     """
     start_time = time.time()
     
+    if status_callback:
+        status_callback("🔄 Resuming remaining workflow actions...", f"Executing {len(remaining_actions)} queued action(s)...")
+        
     try:
         current_strats = database.get_strategies()
         strategies_str = "\n".join([f"- {s['strategy_text']}" for s in current_strats])
@@ -358,8 +393,10 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
             ticker = a_dict.get("ticker") if isinstance(a_dict, dict) else a_dict.ticker
             ticker = ticker.upper().strip() if ticker else None
             if ticker:
+                if status_callback:
+                    status_callback(f"⚔️ Running Bull vs. Bear debate for {ticker}...", f"Scanning news and analyzing catalysts for {ticker}...")
                 try:
-                    res = database.conduct_portfolio_analysis(ticker)
+                    res = database.conduct_portfolio_analysis(ticker, status_callback=status_callback)
                     synthesis_text = res.get('synthesis', str(res)) if isinstance(res, dict) else str(res)
                     results.append(
                         f"=== Portfolio News Scan & Debate for {ticker} ===\n"
@@ -369,6 +406,8 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
                 except Exception as e:
                     results.append(f"=== Debate for {ticker} Failed ===\nError: {e}\n")
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Debate for {ticker} failed", f"Error: {e}")
             else:
                 results.append("=== Debate Error ===\nTicker symbol was not specified.\n")
                 actions_run.append({"type": "debate", "status": "missing_args"})
@@ -376,8 +415,10 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
         elif a_type == "stress_test":
             scenario = a_dict.get("scenario") if isinstance(a_dict, dict) else a_dict.scenario
             if scenario:
+                if status_callback:
+                    status_callback(f"⚡ Running macro stress test...", f"Simulating economic shock: '{scenario}'...")
                 try:
-                    report = database.execute_stress_test(scenario)
+                    report = database.execute_stress_test(scenario, status_callback=status_callback)
                     results.append(
                         f"=== Macro Stress Test Report ===\n"
                         f"Scenario: {scenario}\n"
@@ -387,6 +428,8 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
                 except Exception as e:
                     results.append(f"=== Stress Test Failed ===\nError: {e}\n")
                     actions_run.append({"type": "stress_test", "scenario": scenario, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback("⚠️ Stress test failed", f"Error: {e}")
             else:
                 results.append("=== Stress Test Error ===\nScenario description was not specified.\n")
                 actions_run.append({"type": "stress_test", "status": "missing_args"})
@@ -396,22 +439,26 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str) -> dict
             actions_run.append({"type": "ingest", "status": "unsupported_continuation"})
             
         elif a_type == "performance_analysis":
+            if status_callback:
+                status_callback("📈 Computing portfolio performance...", "Calculating latest valuations & returns...")
             try:
-                perf_report = database.get_portfolio_performance_summary()
+                perf_report = database.get_portfolio_performance_summary(status_callback=status_callback)
                 results.append(perf_report)
                 actions_run.append({"type": "performance_analysis", "status": "success"})
             except Exception as e:
                 results.append(f"=== Performance Analysis Failed ===\nError: {e}\n")
                 actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
+                if status_callback:
+                    status_callback("⚠️ Performance analysis failed", f"Error: {e}")
                 
     results_summary = "\n".join(results)
     if not results_summary:
         print("Executing conversational continuation response...")
-        final_response = agent.generate_conversational_response(original_prompt, strategies_str)
+        final_response = agent.generate_conversational_response(original_prompt, strategies_str, status_callback=status_callback)
         actions_run.append({"type": "conversational"})
     else:
         print("Synthesizing workflow continuation results into chatbot response...")
-        final_response = agent.synthesize_chat_response(original_prompt, results_summary, strategies_str)
+        final_response = agent.synthesize_chat_response(original_prompt, results_summary, strategies_str, status_callback=status_callback)
         
     elapsed = time.time() - start_time
     session_metadata = {
