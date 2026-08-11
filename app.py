@@ -13,8 +13,67 @@ st.set_page_config(
     page_title="MarketPulse AI",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
+
+# Custom CSS for tabs, header, and clean spacing
+st.markdown("""
+<style>
+    /* Header styling */
+    .marketpulse-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.25rem 0 1rem 0;
+        border-bottom: 1px solid rgba(250, 250, 250, 0.1);
+        margin-bottom: 1.25rem;
+    }
+    .marketpulse-title {
+        font-size: 1.85rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin: 0;
+    }
+    .marketpulse-badge {
+        font-size: 0.8rem;
+        font-weight: 500;
+        padding: 0.25rem 0.65rem;
+        border-radius: 9999px;
+        background: rgba(56, 189, 248, 0.12);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+    
+    /* Native tab styling */
+    div[data-baseweb="tab-list"] {
+        gap: 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding-bottom: 4px;
+        margin-bottom: 1rem;
+    }
+    div[data-baseweb="tab"] {
+        padding: 8px 18px;
+        border-radius: 8px 8px 0 0;
+        font-weight: 500;
+        font-size: 0.95rem;
+        transition: all 0.2s ease-in-out;
+    }
+    div[data-baseweb="tab"]:hover {
+        background: rgba(255, 255, 255, 0.04);
+        color: #38bdf8;
+    }
+    div[data-baseweb="tab"][aria-selected="true"] {
+        font-weight: 600;
+    }
+    div[data-baseweb="tab-highlight"] {
+        background-color: #38bdf8;
+        height: 3px;
+        border-radius: 3px 3px 0 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Run database migrations on startup
 try:
@@ -22,27 +81,13 @@ try:
 except Exception as e:
     st.error(f"Failed to execute database migrations: {e}")
 
-# ==========================================
-# SIDEBAR NAVIGATION & HEALTH STATUS
-# ==========================================
-
-st.sidebar.title("MarketPulse AI 📊")
-st.sidebar.markdown("**Unified Portfolio RAG Sentinel**")
-st.sidebar.markdown("---")
-
-# Page Routing Radio Menu
-selected_page = st.sidebar.radio(
-    "Navigation Menu",
-    [
-        "💼 Portfolio Positions",
-        "💬 AI Research Chatbot",
-        "📰 Market News Portal",
-        "🛠️ Developer Diagnostics"
-    ]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("⚠️ **Disclaimer**: Educational simulation only. Non-custodial research support. No broker connections.")
+# Header
+st.markdown("""
+<div class="marketpulse-header">
+    <div class="marketpulse-title">MarketPulse AI</div>
+    <div class="marketpulse-badge">Unified Portfolio RAG Sentinel</div>
+</div>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # PAGE RENDERERS
@@ -1034,16 +1079,26 @@ def render_developer_page():
             st.write(f"Error fetching audit trail: {e}")
 
 # ==========================================
-# PAGE ROUTING CONTROL
+# PAGE ROUTING (NATIVE TABS)
 # ==========================================
 
-if selected_page == "💼 Portfolio Positions":
+tab_portfolio, tab_chat, tab_news, tab_diagnostics = st.tabs([
+    "💼 Portfolio",
+    "💬 Research Chat",
+    "📰 Market News",
+    "🛠️ Diagnostics"
+])
+
+with tab_portfolio:
     render_portfolio_page()
-elif selected_page == "💬 AI Research Chatbot":
+
+with tab_chat:
     render_chatbot_page()
-elif selected_page == "📰 Market News Portal":
+
+with tab_news:
     render_news_page()
-elif selected_page == "🛠️ Developer Diagnostics":
+
+with tab_diagnostics:
     render_developer_page()
 
 
