@@ -24,6 +24,7 @@ You can trigger specific research sentinel actions using slash commands with opt
 | Command | Action | Example Description |
 | :--- | :--- | :--- |
 | **`/debate <description>`** | **Bull vs. Bear Debate & News Scan**<br>Synthesizes market news and weighs upside catalysts against downside risks. | • `/debate NVDA`<br>• `/debate talk about the bull and bear market based on the news for MSFT` |
+| **`/backtest <ticker>`** | **Quantitative Strategy Backtest**<br>Simulates SMA crossover strategy performance with zero lookahead bias. | • `/backtest NVDA`<br>• `Should I sell NVDA if it drops below its 20-day moving average?` |
 | **`/stress <description>`** | **Macro Risk Stress Test**<br>Simulates portfolio impact under specific economic scenarios. | • `/stress 50bps rate hike`<br>• `/stress evaluate what happens if oil prices surge` |
 | **`/performance`** | **Portfolio Performance & Valuation**<br>Calculates real-time portfolio value, daily P&L, and asset allocation breakdown. | • `/performance`<br>• `/performance summarize my top holdings and returns` |
 | **`/help`** | **Commands Reference**<br>Shows this reference guide. | • `/help` |
@@ -53,6 +54,9 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         
     has_file = bool(uploaded_files)
     start_time = time.time()
+    
+    # Clear any previous turn's backtest result
+    agent.clear_last_backtest_result()
     
     if status_callback:
         status_callback("🔍 Loading context & investment rules...", "Retrieving active portfolio holdings and qualitative strategy rules from CockroachDB...")
@@ -184,6 +188,70 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
                 if status_callback:
                     status_callback("⚠️ Performance analysis encountered an issue", f"Error: {e}")
+
+        elif a_type == "backtest":
+            ticker = a.ticker.upper().strip() if a.ticker else None
+            if not ticker and current_holdings:
+                ticker = current_holdings[0]['ticker'].upper().strip()
+                
+            if ticker:
+                strat_type = a.strategy_type or "sma_cross"
+                timeframe = a.timeframe or "1y"
+                short_w = a.short_window or 20
+                long_w = a.long_window or 50
+                rsi_p = a.rsi_period or 14
+                rsi_os = a.rsi_oversold if a.rsi_oversold is not None else 30.0
+                rsi_ob = a.rsi_overbought if a.rsi_overbought is not None else 70.0
+                m_fast = a.macd_fast or 12
+                m_slow = a.macd_slow or 26
+                m_sig = a.macd_signal or 9
+                bb_w = a.bb_window or 20
+                bb_s = a.bb_std if a.bb_std is not None else 2.0
+                bo_w = a.breakout_window or 20
+                
+                if status_callback:
+                    status_callback(f"📊 Running quantitative {strat_type.upper()} backtest for {ticker}...", f"Evaluating strategy logic on historical data...")
+                try:
+                    bt_res = agent.backtest_universal_strategy(
+                        ticker=ticker,
+                        strategy_type=strat_type,
+                        period=timeframe,
+                        short_window=short_w,
+                        long_window=long_w,
+                        rsi_period=rsi_p,
+                        rsi_oversold=rsi_os,
+                        rsi_overbought=rsi_ob,
+                        macd_fast=m_fast,
+                        macd_slow=m_slow,
+                        macd_signal=m_sig,
+                        bb_window=bb_w,
+                        bb_std=bb_s,
+                        breakout_window=bo_w
+                    )
+                    if bt_res.get("error"):
+                        results.append(f"=== Backtest Error for {ticker} ({strat_type}) ===\n{bt_res['error']}\n")
+                        actions_run.append({"type": "backtest", "ticker": ticker, "status": "error", "error": bt_res["error"]})
+                    else:
+                        outperform_str = "Outperformed Benchmark" if bt_res["outperformed"] else "Underperformed Benchmark"
+                        results.append(
+                            f"=== Quantitative Backtest for {ticker} ({bt_res['strategy_name']}) ===\n"
+                            f"- Strategy: {bt_res['strategy_name']}\n"
+                            f"- Rules: {bt_res['condition_summary']}\n"
+                            f"- Strategy Total Return: {bt_res['Strategy_Return_Pct']:+.2f}%\n"
+                            f"- Buy & Hold Benchmark Return: {bt_res['Buy_Hold_Return_Pct']:+.2f}%\n"
+                            f"- Win Rate: {bt_res['Win_Rate_Pct']:.2f}%\n"
+                            f"- Max Drawdown: {bt_res['Max_Drawdown_Pct']:.2f}%\n"
+                            f"- Historical Outcome: {outperform_str}\n"
+                        )
+                        actions_run.append({"type": "backtest", "ticker": ticker, "strategy_type": strat_type, "status": "success"})
+                except Exception as e:
+                    results.append(f"=== Backtest for {ticker} Failed ===\nError: {e}\n")
+                    actions_run.append({"type": "backtest", "ticker": ticker, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Backtest for {ticker} failed", f"Error: {e}")
+            else:
+                results.append("=== Backtest Error ===\nTicker symbol was not specified and no portfolio holdings were found.\n")
+                actions_run.append({"type": "backtest", "status": "missing_args"})
 
         elif a_type == "add_strategy":
             strategy_text = a.strategy_text
@@ -350,6 +418,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         session_metadata=session_metadata
     )
     
+    bt_payload = agent.get_last_backtest_result()
+    
     return {
         "response": final_response,
         "router": {
@@ -357,7 +427,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
             "actions": [{"type": a.action_type, "ticker": a.ticker, "scenario": a.scenario} for a in router_output.actions]
         },
         "actions_run": actions_run,
-        "pending_strategy": pending_strategy
+        "pending_strategy": pending_strategy,
+        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None
     }
 
 def run_remaining_actions(remaining_actions: list, original_prompt: str, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
@@ -450,6 +521,68 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
                 actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
                 if status_callback:
                     status_callback("⚠️ Performance analysis failed", f"Error: {e}")
+
+        elif a_type == "backtest":
+            ticker = a_dict.get("ticker") if isinstance(a_dict, dict) else getattr(a_dict, "ticker", None)
+            ticker = ticker.upper().strip() if ticker else None
+            if ticker:
+                strat_type = a_dict.get("strategy_type", "sma_cross") if isinstance(a_dict, dict) else getattr(a_dict, "strategy_type", "sma_cross")
+                timeframe = a_dict.get("timeframe", "1y") if isinstance(a_dict, dict) else getattr(a_dict, "timeframe", "1y")
+                short_w = a_dict.get("short_window", 20) if isinstance(a_dict, dict) else getattr(a_dict, "short_window", 20)
+                long_w = a_dict.get("long_window", 50) if isinstance(a_dict, dict) else getattr(a_dict, "long_window", 50)
+                rsi_p = a_dict.get("rsi_period", 14) if isinstance(a_dict, dict) else getattr(a_dict, "rsi_period", 14)
+                rsi_os = a_dict.get("rsi_oversold", 30.0) if isinstance(a_dict, dict) else getattr(a_dict, "rsi_oversold", 30.0)
+                rsi_ob = a_dict.get("rsi_overbought", 70.0) if isinstance(a_dict, dict) else getattr(a_dict, "rsi_overbought", 70.0)
+                m_fast = a_dict.get("macd_fast", 12) if isinstance(a_dict, dict) else getattr(a_dict, "macd_fast", 12)
+                m_slow = a_dict.get("macd_slow", 26) if isinstance(a_dict, dict) else getattr(a_dict, "macd_slow", 26)
+                m_sig = a_dict.get("macd_signal", 9) if isinstance(a_dict, dict) else getattr(a_dict, "macd_signal", 9)
+                bb_w = a_dict.get("bb_window", 20) if isinstance(a_dict, dict) else getattr(a_dict, "bb_window", 20)
+                bb_s = a_dict.get("bb_std", 2.0) if isinstance(a_dict, dict) else getattr(a_dict, "bb_std", 2.0)
+                bo_w = a_dict.get("breakout_window", 20) if isinstance(a_dict, dict) else getattr(a_dict, "breakout_window", 20)
+                
+                if status_callback:
+                    status_callback(f"📊 Running quantitative {strat_type.upper()} backtest for {ticker}...", f"Evaluating strategy logic...")
+                try:
+                    bt_res = agent.backtest_universal_strategy(
+                        ticker=ticker,
+                        strategy_type=strat_type,
+                        period=timeframe,
+                        short_window=short_w,
+                        long_window=long_w,
+                        rsi_period=rsi_p,
+                        rsi_oversold=rsi_os,
+                        rsi_overbought=rsi_ob,
+                        macd_fast=m_fast,
+                        macd_slow=m_slow,
+                        macd_signal=m_sig,
+                        bb_window=bb_w,
+                        bb_std=bb_s,
+                        breakout_window=bo_w
+                    )
+                    if bt_res.get("error"):
+                        results.append(f"=== Backtest Error for {ticker} ({strat_type}) ===\n{bt_res['error']}\n")
+                        actions_run.append({"type": "backtest", "ticker": ticker, "status": "error", "error": bt_res["error"]})
+                    else:
+                        outperform_str = "Outperformed Benchmark" if bt_res["outperformed"] else "Underperformed Benchmark"
+                        results.append(
+                            f"=== Quantitative Backtest for {ticker} ({bt_res['strategy_name']}) ===\n"
+                            f"- Strategy: {bt_res['strategy_name']}\n"
+                            f"- Rules: {bt_res['condition_summary']}\n"
+                            f"- Strategy Total Return: {bt_res['Strategy_Return_Pct']:+.2f}%\n"
+                            f"- Buy & Hold Benchmark Return: {bt_res['Buy_Hold_Return_Pct']:+.2f}%\n"
+                            f"- Win Rate: {bt_res['Win_Rate_Pct']:.2f}%\n"
+                            f"- Max Drawdown: {bt_res['Max_Drawdown_Pct']:.2f}%\n"
+                            f"- Historical Outcome: {outperform_str}\n"
+                        )
+                        actions_run.append({"type": "backtest", "ticker": ticker, "strategy_type": strat_type, "status": "success"})
+                except Exception as e:
+                    results.append(f"=== Backtest for {ticker} Failed ===\nError: {e}\n")
+                    actions_run.append({"type": "backtest", "ticker": ticker, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Backtest for {ticker} failed", f"Error: {e}")
+            else:
+                results.append("=== Backtest Error ===\nTicker symbol was not specified.\n")
+                actions_run.append({"type": "backtest", "status": "missing_args"})
                 
     results_summary = "\n".join(results)
     if not results_summary:
@@ -479,8 +612,11 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
         session_metadata=session_metadata
     )
     
+    bt_payload = agent.get_last_backtest_result()
+    
     return {
         "response": final_response,
-        "actions_run": actions_run
+        "actions_run": actions_run,
+        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None
     }
 

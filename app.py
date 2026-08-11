@@ -308,6 +308,14 @@ def inject_slash_command_palette():
                 desc: "Simulate portfolio impact under macro / economic shocks"
             },
             {
+                cmd: "/backtest",
+                template: "/backtest ",
+                icon: "📈",
+                badge: "ticker / strategy",
+                title: "Strategy Backtest",
+                desc: "Simulate quantitative SMA crossover strategy with zero lookahead bias"
+            },
+            {
                 cmd: "/performance",
                 template: "/performance",
                 icon: "📊",
@@ -490,6 +498,78 @@ def inject_slash_command_palette():
     """
     components.html(palette_html, height=0, width=0)
 
+def render_backtest_card(bt_data: dict):
+    """Renders an inline quantitative strategy validation card with KPI metrics and cumulative performance chart."""
+    if not bt_data or bt_data.get("error"):
+        return
+        
+    with st.container(border=True):
+        outperformed = bt_data.get("outperformed", False)
+        ticker = bt_data.get("ticker", "ASSET")
+        period = bt_data.get("period", "1y")
+        strat_name = bt_data.get("strategy_name", "Quantitative Strategy")
+        cond_summary = bt_data.get("condition_summary", "Technical trading rule simulation")
+        strat_type = bt_data.get("strategy_type", "sma_cross").lower()
+        
+        # Determine icon based on strategy type
+        icon_map = {
+            "rsi": "⚡",
+            "macd": "📊",
+            "ema_cross": "📈",
+            "bollinger": "🎯",
+            "breakout": "🚀",
+            "sma_cross": "📊"
+        }
+        icon = icon_map.get(strat_type, "📈")
+        
+        header_col, badge_col = st.columns([2, 1])
+        with header_col:
+            st.markdown(f"#### {icon} **{strat_name}: {ticker}**")
+            st.caption(f"**Rule Logic**: {cond_summary} | **Timeframe**: {period} *(1-Day Shift / Zero Lookahead Bias)*")
+        with badge_col:
+            if outperformed:
+                st.markdown(
+                    """
+                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10B981; border-radius: 8px; padding: 6px 12px; text-align: center; color: #10B981; font-weight: 600; font-size: 0.85rem;">
+                        🟢 Outperformed Benchmark
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    """
+                    <div style="background: rgba(245, 158, 11, 0.15); border: 1px solid #F59E0B; border-radius: 8px; padding: 6px 12px; text-align: center; color: #F59E0B; font-weight: 600; font-size: 0.85rem;">
+                        ⚠️ Underperformed Benchmark
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+        st.markdown("---")
+        
+        # 4 KPI Metrics
+        m1, m2, m3, m4 = st.columns(4)
+        strat_ret = bt_data.get("Strategy_Return_Pct", 0.0)
+        bh_ret = bt_data.get("Buy_Hold_Return_Pct", 0.0)
+        win_rate = bt_data.get("Win_Rate_Pct", 0.0)
+        max_dd = bt_data.get("Max_Drawdown_Pct", 0.0)
+        
+        m1.metric("Strategy Return", f"{strat_ret:+.2f}%", delta=f"{strat_ret - bh_ret:+.2f}% vs. B&H")
+        m2.metric("Buy & Hold Benchmark", f"{bh_ret:+.2f}%")
+        m3.metric("Win Rate", f"{win_rate:.2f}%")
+        m4.metric("Max Drawdown", f"{max_dd:.2f}%")
+        
+        # Cumulative returns comparison line chart
+        chart_data = bt_data.get("chart_data")
+        if chart_data:
+            try:
+                chart_df = pd.DataFrame(chart_data).set_index("Date")
+                st.markdown("##### 📈 Cumulative Performance Comparison (%)")
+                st.line_chart(chart_df, color=["#38BDF8", "#94A3B8"])
+            except Exception:
+                pass
+
 def render_chatbot_page():
     col_header, col_new = st.columns([3, 1])
     with col_header:
@@ -552,6 +632,8 @@ def render_chatbot_page():
         with chat_container:
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
+                    if msg.get("backtest_data"):
+                        render_backtest_card(msg["backtest_data"])
                     st.markdown(msg["content"])
                     
         # Show pending strategy confirmation form if active
@@ -603,6 +685,10 @@ def render_chatbot_page():
                                         try:
                                             res_remaining = services.run_remaining_actions(remaining, pending["original_prompt"], status_callback=handle_rem_status)
                                             rem_status.update(label="✅ Continuation actions complete", state="complete", expanded=False)
+                                            
+                                            if res_remaining.get("backtest_data"):
+                                                render_backtest_card(res_remaining["backtest_data"])
+                                                
                                             final_content = res_remaining["response"]
                                             def stream_words(text: str):
                                                 words = text.split(" ")
@@ -612,7 +698,8 @@ def render_chatbot_page():
                                             st.write_stream(stream_words(final_content))
                                             st.session_state.chat_history.append({
                                                 "role": "assistant",
-                                                "content": final_content
+                                                "content": final_content,
+                                                "backtest_data": res_remaining.get("backtest_data")
                                             })
                                             try:
                                                 database.save_chat_message(role="assistant", content=final_content)
@@ -723,6 +810,10 @@ def render_chatbot_page():
                         )
                         status_box.update(label="✅ Analysis & execution complete", state="complete", expanded=False)
                         
+                        # Render inline quantitative backtest validation card if present
+                        if res.get("backtest_data"):
+                            render_backtest_card(res["backtest_data"])
+                            
                         def stream_words(text: str):
                             words = text.split(" ")
                             for i, word in enumerate(words):
@@ -737,7 +828,11 @@ def render_chatbot_page():
                             print(f"Error persisting assistant message: {e}")
                         
                         # Append assistant response
-                        st.session_state.chat_history.append({"role": "assistant", "content": res["response"]})
+                        st.session_state.chat_history.append({
+                            "role": "assistant", 
+                            "content": res["response"],
+                            "backtest_data": res.get("backtest_data")
+                        })
                         st.session_state.last_router_output = res["router"]
                         if res.get("pending_strategy"):
                             st.session_state.pending_strategy = res["pending_strategy"]
