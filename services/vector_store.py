@@ -6,6 +6,7 @@ from typing import Callable, Optional
 import yfinance as yf
 from google.genai import errors
 import services.database as database
+import services.alpaca_service as alpaca_service
 import providers
 import agent
 import config
@@ -24,19 +25,20 @@ You can trigger specific research sentinel actions using slash commands with opt
 | Command | Action | Example Description |
 | :--- | :--- | :--- |
 | **`/debate <description>`** | **Bull vs. Bear Debate & News Scan**<br>Synthesizes market news and weighs upside catalysts against downside risks. | • `/debate NVDA`<br>• `/debate talk about the bull and bear market based on the news for MSFT` |
-| **`/backtest <ticker>`** | **Quantitative Strategy Backtest**<br>Simulates SMA crossover strategy performance with zero lookahead bias. | • `/backtest NVDA`<br>• `Should I sell NVDA if it drops below its 20-day moving average?` |
+| **`/backtest <ticker>`** | **Quantitative Strategy Backtest**<br>Simulates technical strategy performance with zero lookahead bias. | • `/backtest NVDA`<br>• `Should I sell NVDA if it drops below its 20-day moving average?` |
+| **`/trade`** | **Automated Paper Trading**<br>Submits paper market orders to Alpaca Sandbox with audit logging. | • `/trade`<br>• `Buy 10 shares of NVDA`<br>• `Sell 5 shares of MSFT` |
 | **`/stress <description>`** | **Macro Risk Stress Test**<br>Simulates portfolio impact under specific economic scenarios. | • `/stress 50bps rate hike`<br>• `/stress evaluate what happens if oil prices surge` |
 | **`/performance`** | **Portfolio Performance & Valuation**<br>Calculates real-time portfolio value, daily P&L, and asset allocation breakdown. | • `/performance`<br>• `/performance summarize my top holdings and returns` |
 | **`/help`** | **Commands Reference**<br>Shows this reference guide. | • `/help` |
 
-💡 **Multi-Intent Support:** You can combine slash commands with other requests in a single prompt (e.g., `"/debate AAPL and also run a stress test on inflation"`).
+💡 **Multi-Intent Support:** You can combine slash commands with other requests in a single prompt (e.g., `"/debate AAPL and also run a backtest on RSI"`).
 """
 
 def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """
     Structured chatbot assistant workflow:
     1. Parses user's request into structured action items.
-    2. Runs actions (debate, stress test, ingestion, strategy manipulation) sequentially.
+    2. Runs actions (debate, stress test, ingestion, strategy manipulation, paper trading) sequentially.
     3. Synthesizes outputs into a unified chat response.
     4. Logs session metadata and details in CockroachDB.
     """
@@ -55,8 +57,9 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     has_file = bool(uploaded_files)
     start_time = time.time()
     
-    # Clear any previous turn's backtest result
+    # Clear any previous turn's backtest and trade results
     agent.clear_last_backtest_result()
+    agent.clear_last_trade_result()
     
     if status_callback:
         status_callback("🔍 Loading context & investment rules...", "Retrieving active portfolio holdings and qualitative strategy rules from CockroachDB...")
@@ -253,7 +256,82 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 results.append("=== Backtest Error ===\nTicker symbol was not specified and no portfolio holdings were found.\n")
                 actions_run.append({"type": "backtest", "status": "missing_args"})
 
+        elif a_type == "paper_trade":
+            ticker = a.ticker.upper().strip() if a.ticker else None
+            if not ticker and current_holdings:
+                ticker = current_holdings[0]['ticker'].upper().strip()
+                
+            qty = a.qty if a.qty is not None and a.qty > 0 else 10.0
+            side = a.side.lower().strip() if a.side else "buy"
+            if side not in ("buy", "sell"):
+                side = "buy"
+                
+            target_sbx_name = getattr(a, "sandbox_target", None)
+            
+            # Check sandboxes
+            all_sandboxes = database.get_sandboxes()
+            target_sandbox_id = None
+            resolved_sbx_name = None
+            
+            if not all_sandboxes:
+                results.append(
+                    f"=== Paper Trade Notice ===\n"
+                    f"User attempted to trade {ticker}, but 0 strategy sandboxes exist. "
+                    f"Offer to create a new dedicated sandbox for this strategy (e.g. '{ticker} Strategy Sandbox' with $100,000 capital).\n"
+                )
+                actions_run.append({"type": "paper_trade", "ticker": ticker, "status": "no_sandboxes"})
+            elif ticker:
+                if target_sbx_name:
+                    matched = next((s for s in all_sandboxes if str(s["sandbox_id"]) == str(target_sbx_name)), None)
+                    if not matched:
+                        matched = next((s for s in all_sandboxes if target_sbx_name.lower() in s["name"].lower() or s["name"].lower() in target_sbx_name.lower()), None)
+                    if matched:
+                        target_sandbox_id = str(matched["sandbox_id"])
+                        resolved_sbx_name = matched["name"]
+                        
+                if not target_sandbox_id and all_sandboxes:
+                    target_sandbox_id = str(all_sandboxes[0]["sandbox_id"])
+                    resolved_sbx_name = all_sandboxes[0]["name"]
+                    
+                if status_callback:
+                    status_callback(f"🧪 Executing paper trade order for {qty:g} shares of {ticker}...", f"Targeting {resolved_sbx_name or 'Sandbox'} ({side.upper()} order)...")
+                try:
+                    trade_res = alpaca_service.submit_paper_order(
+                        symbol=ticker,
+                        qty=qty,
+                        side=side,
+                        sandbox_id=target_sandbox_id,
+                        order_type="market",
+                        time_in_force="gtc"
+                    )
+                    if resolved_sbx_name:
+                        trade_res["sandbox_name"] = resolved_sbx_name
+                    agent.set_last_trade_result(trade_res)
+                    results.append(
+                        f"=== Paper Trade Order Executed ===\n"
+                        f"- Sandbox: {resolved_sbx_name or 'Default'}\n"
+                        f"- Symbol: {trade_res['symbol']}\n"
+                        f"- Action: {trade_res['side']}\n"
+                        f"- Quantity: {trade_res['qty']}\n"
+                        f"- Order ID: {trade_res['order_id']}\n"
+                        f"- Status: {trade_res['status']}\n"
+                        f"- Timestamp: {trade_res['timestamp']}\n"
+                    )
+                    actions_run.append({"type": "paper_trade", "ticker": ticker, "qty": qty, "side": side, "sandbox": resolved_sbx_name, "status": "success"})
+                    if status_callback:
+                        status_callback(f"✅ Paper order placed in {resolved_sbx_name or 'Sandbox'}", f"{side.upper()} {qty:g} {ticker}")
+                except Exception as e:
+                    results.append(f"=== Paper Trade for {ticker} Failed ===\nError: {e}\n")
+                    actions_run.append({"type": "paper_trade", "ticker": ticker, "status": "error", "error": str(e)})
+                    if status_callback:
+                        status_callback(f"⚠️ Paper trade for {ticker} failed", f"Error: {e}")
+            else:
+                results.append("=== Paper Trade Error ===\nTicker symbol was not specified and no portfolio holdings were found.\n")
+                actions_run.append({"type": "paper_trade", "status": "missing_args"})
+
+
         elif a_type == "add_strategy":
+
             strategy_text = a.strategy_text
             if strategy_text:
                 if status_callback:
@@ -419,6 +497,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     )
     
     bt_payload = agent.get_last_backtest_result()
+    trade_payload = agent.get_last_trade_result()
     
     return {
         "response": final_response,
@@ -428,7 +507,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         },
         "actions_run": actions_run,
         "pending_strategy": pending_strategy,
-        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None
+        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None,
+        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None
     }
 
 def run_remaining_actions(remaining_actions: list, original_prompt: str, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
@@ -437,6 +517,10 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
     Factors in the newly updated database state.
     """
     start_time = time.time()
+    
+    # Clear any previous turn's backtest and trade results
+    agent.clear_last_backtest_result()
+    agent.clear_last_trade_result()
     
     if status_callback:
         status_callback("🔄 Resuming remaining workflow actions...", f"Executing {len(remaining_actions)} queued action(s)...")
@@ -521,6 +605,67 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
                 actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
                 if status_callback:
                     status_callback("⚠️ Performance analysis failed", f"Error: {e}")
+
+        elif a_type == "paper_trade":
+            ticker = a_dict.get("ticker") if isinstance(a_dict, dict) else getattr(a_dict, "ticker", None)
+            ticker = ticker.upper().strip() if ticker else None
+            qty = a_dict.get("qty") if isinstance(a_dict, dict) else getattr(a_dict, "qty", 10.0)
+            qty = float(qty) if qty and float(qty) > 0 else 10.0
+            side = a_dict.get("side", "buy") if isinstance(a_dict, dict) else getattr(a_dict, "side", "buy")
+            side = str(side).lower().strip()
+            if side not in ("buy", "sell"):
+                side = "buy"
+                
+            target_sbx_name = a_dict.get("sandbox_target") if isinstance(a_dict, dict) else getattr(a_dict, "sandbox_target", None)
+            all_sandboxes = database.get_sandboxes()
+            target_sandbox_id = None
+            resolved_sbx_name = None
+            
+            if target_sbx_name and all_sandboxes:
+                matched = next((s for s in all_sandboxes if str(s["sandbox_id"]) == str(target_sbx_name)), None)
+                if not matched:
+                    matched = next((s for s in all_sandboxes if target_sbx_name.lower() in s["name"].lower() or s["name"].lower() in target_sbx_name.lower()), None)
+                if matched:
+                    target_sandbox_id = str(matched["sandbox_id"])
+                    resolved_sbx_name = matched["name"]
+                    
+            if not target_sandbox_id and all_sandboxes:
+                target_sandbox_id = str(all_sandboxes[0]["sandbox_id"])
+                resolved_sbx_name = all_sandboxes[0]["name"]
+                
+            if ticker and all_sandboxes:
+                if status_callback:
+                    status_callback(f"🧪 Executing paper trade order for {qty:g} shares of {ticker}...", f"Targeting {resolved_sbx_name or 'Sandbox'} ({side.upper()} order)...")
+                try:
+                    trade_res = alpaca_service.submit_paper_order(
+                        symbol=ticker,
+                        qty=qty,
+                        side=side,
+                        sandbox_id=target_sandbox_id,
+                        order_type="market",
+                        time_in_force="gtc"
+                    )
+                    if resolved_sbx_name:
+                        trade_res["sandbox_name"] = resolved_sbx_name
+                    agent.set_last_trade_result(trade_res)
+                    results.append(
+                        f"=== Paper Trade Order Executed ===\n"
+                        f"- Sandbox: {resolved_sbx_name or 'Default'}\n"
+                        f"- Symbol: {trade_res['symbol']}\n"
+                        f"- Action: {trade_res['side']}\n"
+                        f"- Quantity: {trade_res['qty']}\n"
+                        f"- Order ID: {trade_res['order_id']}\n"
+                        f"- Status: {trade_res['status']}\n"
+                        f"- Timestamp: {trade_res['timestamp']}\n"
+                    )
+                    actions_run.append({"type": "paper_trade", "ticker": ticker, "qty": qty, "side": side, "sandbox": resolved_sbx_name, "status": "success"})
+                except Exception as e:
+                    results.append(f"=== Paper Trade for {ticker} Failed ===\nError: {e}\n")
+                    actions_run.append({"type": "paper_trade", "ticker": ticker, "status": "error", "error": str(e)})
+            else:
+                results.append("=== Paper Trade Error ===\nTicker symbol was not specified or no sandboxes exist.\n")
+                actions_run.append({"type": "paper_trade", "status": "missing_args"})
+
 
         elif a_type == "backtest":
             ticker = a_dict.get("ticker") if isinstance(a_dict, dict) else getattr(a_dict, "ticker", None)
@@ -613,10 +758,13 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
     )
     
     bt_payload = agent.get_last_backtest_result()
+    trade_payload = agent.get_last_trade_result()
     
     return {
         "response": final_response,
         "actions_run": actions_run,
-        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None
+        "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None,
+        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None
     }
+
 

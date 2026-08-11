@@ -913,3 +913,472 @@ def conduct_portfolio_analysis(ticker, status_callback: Optional[Callable[[str, 
     
     print(f"Analysis completed successfully in {elapsed_time:.2f}s!")
     return synthesis
+
+# ==========================================
+# PAPER TRADING AUDIT LOGGING
+# ==========================================
+
+@db_retry
+def log_paper_trade(
+    order_id: str,
+    symbol: str,
+    side: str,
+    qty: float,
+    status: str,
+    execution_price: Optional[float] = None,
+    order_type: str = "market",
+    time_in_force: str = "gtc",
+    raw_response: dict = None,
+    sandbox_id: Optional[str] = None,
+    user_id: str = "demo_user"
+) -> str:
+    """Logs an executed paper order into the paper_trades audit table."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            raw_json = json.dumps(raw_response or {})
+            cur.execute(
+                """
+                INSERT INTO paper_trades (
+                    user_id, order_id, symbol, side, qty, 
+                    execution_price, status, order_type, time_in_force, raw_response, sandbox_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::JSONB, %s)
+                RETURNING trade_id;
+                """,
+                (
+                    user_id,
+                    str(order_id),
+                    symbol.upper().strip(),
+                    side.upper().strip(),
+                    float(qty),
+                    execution_price,
+                    status,
+                    order_type.lower().strip(),
+                    time_in_force.lower().strip(),
+                    raw_json,
+                    sandbox_id
+                )
+            )
+            trade_id = cur.fetchone()[0]
+            conn.commit()
+            return str(trade_id)
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_paper_trade_logs(limit: int = 50, sandbox_id: Optional[str] = None, user_id: str = "demo_user") -> list[dict]:
+    """Retrieves executed paper trade audit logs ordered by creation timestamp descending."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            if sandbox_id:
+                cur.execute(
+                    """
+                    SELECT trade_id, user_id, order_id, symbol, side, qty, 
+                           execution_price, status, order_type, time_in_force, raw_response, sandbox_id, created_at
+                    FROM paper_trades
+                    WHERE user_id = %s AND sandbox_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (user_id, sandbox_id, limit)
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT trade_id, user_id, order_id, symbol, side, qty, 
+                           execution_price, status, order_type, time_in_force, raw_response, sandbox_id, created_at
+                    FROM paper_trades
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (user_id, limit)
+                )
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+# ==========================================
+# MULTI-SANDBOX MANAGEMENT & SUB-LEDGERS
+# ==========================================
+
+@db_retry
+def create_sandbox(
+    name: str,
+    description: Optional[str] = None,
+    initial_capital: float = 100000.0,
+    strategy_id: Optional[str] = None,
+    strategy_type: Optional[str] = None,
+    user_id: str = "demo_user"
+) -> str:
+    """Creates a new strategy sandbox, enforcing a maximum limit of 10 sandboxes per user."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM sandboxes WHERE user_id = %s;", (user_id,))
+            current_count = cur.fetchone()[0]
+            if current_count >= 10:
+                raise ValueError("Maximum limit of 10 strategy sandboxes reached. Please delete an existing sandbox first.")
+                
+            cur.execute(
+                """
+                INSERT INTO sandboxes (
+                    user_id, name, description, strategy_id, strategy_type, initial_capital, cash_balance
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING sandbox_id;
+                """,
+                (
+                    user_id,
+                    name.strip(),
+                    description.strip() if description else None,
+                    strategy_id if strategy_id else None,
+                    strategy_type.strip() if strategy_type else None,
+                    float(initial_capital),
+                    float(initial_capital)
+                )
+            )
+            sandbox_id = cur.fetchone()[0]
+            conn.commit()
+            return str(sandbox_id)
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_sandboxes(user_id: str = "demo_user") -> list[dict]:
+    """Retrieves all sandboxes for a user with bound strategy details."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT s.sandbox_id, s.user_id, s.name, s.description, s.strategy_id, 
+                       s.strategy_type, s.initial_capital, s.cash_balance, s.created_at, s.updated_at,
+                       us.strategy_text
+                FROM sandboxes s
+                LEFT JOIN user_strategies us ON s.strategy_id = us.strategy_id
+                WHERE s.user_id = %s
+                ORDER BY s.created_at ASC;
+                """,
+                (user_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_sandbox_by_id(sandbox_id: str, user_id: str = "demo_user") -> Optional[dict]:
+    """Retrieves a specific sandbox by ID."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT s.sandbox_id, s.user_id, s.name, s.description, s.strategy_id, 
+                       s.strategy_type, s.initial_capital, s.cash_balance, s.created_at, s.updated_at,
+                       us.strategy_text
+                FROM sandboxes s
+                LEFT JOIN user_strategies us ON s.strategy_id = us.strategy_id
+                WHERE s.sandbox_id = %s AND s.user_id = %s;
+                """,
+                (sandbox_id, user_id)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_sandbox_by_name(name: str, user_id: str = "demo_user") -> Optional[dict]:
+    """Retrieves a sandbox by name (case-insensitive substring or exact match)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT s.sandbox_id, s.user_id, s.name, s.description, s.strategy_id, 
+                       s.strategy_type, s.initial_capital, s.cash_balance, s.created_at, s.updated_at,
+                       us.strategy_text
+                FROM sandboxes s
+                LEFT JOIN user_strategies us ON s.strategy_id = us.strategy_id
+                WHERE s.user_id = %s AND LOWER(s.name) = LOWER(%s);
+                """,
+                (user_id, name.strip())
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+                
+            cur.execute(
+                """
+                SELECT s.sandbox_id, s.user_id, s.name, s.description, s.strategy_id, 
+                       s.strategy_type, s.initial_capital, s.cash_balance, s.created_at, s.updated_at,
+                       us.strategy_text
+                FROM sandboxes s
+                LEFT JOIN user_strategies us ON s.strategy_id = us.strategy_id
+                WHERE s.user_id = %s AND LOWER(s.name) LIKE LOWER(%s)
+                ORDER BY s.created_at ASC
+                LIMIT 1;
+                """,
+                (user_id, f"%{name.strip()}%")
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def delete_sandbox(sandbox_id: str, user_id: str = "demo_user") -> bool:
+    """Deletes a sandbox, cascading open positions and preserving paper trade logs."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM sandboxes WHERE sandbox_id = %s AND user_id = %s RETURNING sandbox_id;",
+                (sandbox_id, user_id)
+            )
+            deleted = cur.fetchone()
+            conn.commit()
+            return deleted is not None
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def reset_sandbox(sandbox_id: str, user_id: str = "demo_user") -> bool:
+    """Resets a sandbox to its initial capital, removing all open positions."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sandboxes
+                SET cash_balance = initial_capital, updated_at = now()
+                WHERE sandbox_id = %s AND user_id = %s
+                RETURNING initial_capital;
+                """,
+                (sandbox_id, user_id)
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            cur.execute("DELETE FROM sandbox_positions WHERE sandbox_id = %s;", (sandbox_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_sandbox_positions(sandbox_id: str) -> list[dict]:
+    """Retrieves all open positions in a given sandbox."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT position_id, sandbox_id, symbol, qty, avg_entry_price, created_at, updated_at
+                FROM sandbox_positions
+                WHERE sandbox_id = %s
+                ORDER BY symbol ASC;
+                """,
+                (sandbox_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def update_sandbox_position_and_cash(
+    sandbox_id: str,
+    symbol: str,
+    qty: float,
+    execution_price: float,
+    side: str
+):
+    """
+    Updates the sub-ledger for a specific sandbox (cash balance & positions table).
+    """
+    clean_symbol = symbol.upper().strip()
+    clean_side = side.lower().strip()
+    qty = float(qty)
+    execution_price = float(execution_price)
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            trade_cost = qty * execution_price
+            if clean_side == "buy":
+                cur.execute(
+                    """
+                    UPDATE sandboxes
+                    SET cash_balance = cash_balance - %s, updated_at = now()
+                    WHERE sandbox_id = %s;
+                    """,
+                    (trade_cost, sandbox_id)
+                )
+                
+                # Check existing position
+                cur.execute(
+                    "SELECT position_id, qty, avg_entry_price FROM sandbox_positions WHERE sandbox_id = %s AND symbol = %s;",
+                    (sandbox_id, clean_symbol)
+                )
+                existing = cur.fetchone()
+                if existing:
+                    pos_id, cur_qty, cur_avg = existing
+                    cur_qty = float(cur_qty)
+                    cur_avg = float(cur_avg)
+                    new_qty = cur_qty + qty
+                    new_avg = ((cur_qty * cur_avg) + (qty * execution_price)) / new_qty
+                    cur.execute(
+                        """
+                        UPDATE sandbox_positions
+                        SET qty = %s, avg_entry_price = %s, updated_at = now()
+                        WHERE position_id = %s;
+                        """,
+                        (new_qty, new_avg, pos_id)
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO sandbox_positions (sandbox_id, symbol, qty, avg_entry_price)
+                        VALUES (%s, %s, %s, %s);
+                        """,
+                        (sandbox_id, clean_symbol, qty, execution_price)
+                    )
+            elif clean_side == "sell":
+                cur.execute(
+                    """
+                    UPDATE sandboxes
+                    SET cash_balance = cash_balance + %s, updated_at = now()
+                    WHERE sandbox_id = %s;
+                    """,
+                    (trade_cost, sandbox_id)
+                )
+                cur.execute(
+                    "SELECT position_id, qty FROM sandbox_positions WHERE sandbox_id = %s AND symbol = %s;",
+                    (sandbox_id, clean_symbol)
+                )
+                existing = cur.fetchone()
+                if existing:
+                    pos_id, cur_qty = existing
+                    cur_qty = float(cur_qty)
+                    new_qty = cur_qty - qty
+                    if new_qty <= 0.0001:
+                        cur.execute("DELETE FROM sandbox_positions WHERE position_id = %s;", (pos_id,))
+                    else:
+                        cur.execute(
+                            "UPDATE sandbox_positions SET qty = %s, updated_at = now() WHERE position_id = %s;",
+                            (new_qty, pos_id)
+                        )
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+def calculate_sandbox_metrics(sandbox_id: str, user_id: str = "demo_user") -> dict:
+    """
+    Computes live portfolio metrics for a specific sandbox (Equity, Cash, Unrealized P&L, Total Return %).
+    """
+    sbx = get_sandbox_by_id(sandbox_id, user_id=user_id)
+    if not sbx:
+        return {}
+        
+    positions = get_sandbox_positions(sandbox_id)
+    cash = float(sbx["cash_balance"])
+    initial_capital = float(sbx["initial_capital"])
+    
+    positions_value = 0.0
+    total_cost_basis = 0.0
+    serialized_positions = []
+    
+    latest_prices = get_latest_prices()
+    
+    for p in positions:
+        sym = p["symbol"]
+        qty = float(p["qty"])
+        avg_entry = float(p["avg_entry_price"])
+        cost = qty * avg_entry
+        total_cost_basis += cost
+        
+        cur_price = None
+        if sym in latest_prices:
+            cur_price = float(latest_prices[sym]["price"])
+        if cur_price is None or cur_price <= 0:
+            try:
+                t = yf.Ticker(sym)
+                h = t.history(period="1d")
+                if not h.empty:
+                    cur_price = float(h["Close"].iloc[-1])
+            except Exception:
+                cur_price = avg_entry
+        if cur_price is None or cur_price <= 0:
+            cur_price = avg_entry
+            
+        mkt_val = qty * cur_price
+        positions_value += mkt_val
+        unrealized_pl = mkt_val - cost
+        unrealized_plpc = (unrealized_pl / cost * 100.0) if cost > 0 else 0.0
+        
+        serialized_positions.append({
+            "symbol": sym,
+            "qty": qty,
+            "avg_entry_price": avg_entry,
+            "current_price": cur_price,
+            "market_value": mkt_val,
+            "cost_basis": cost,
+            "unrealized_pl": unrealized_pl,
+            "unrealized_plpc": unrealized_plpc,
+            "side": "LONG"
+        })
+        
+    total_equity = cash + positions_value
+    total_pl = total_equity - initial_capital
+    total_return_pct = (total_pl / initial_capital * 100.0) if initial_capital > 0 else 0.0
+    
+    return {
+        "sandbox_id": str(sbx["sandbox_id"]),
+        "name": sbx["name"],
+        "description": sbx.get("description"),
+        "strategy_id": str(sbx["strategy_id"]) if sbx.get("strategy_id") else None,
+        "strategy_type": sbx.get("strategy_type"),
+        "strategy_text": sbx.get("strategy_text"),
+        "initial_capital": initial_capital,
+        "cash": cash,
+        "positions_value": positions_value,
+        "equity": total_equity,
+        "buying_power": max(0.0, cash),
+        "total_pl": total_pl,
+        "total_return_pct": total_return_pct,
+        "positions_count": len(positions),
+        "positions": serialized_positions
+    }
+
+def get_all_sandboxes_leaderboard(user_id: str = "demo_user") -> list[dict]:
+    """Generates a ranked leaderboard of all sandboxes for a user."""
+    sandboxes = get_sandboxes(user_id=user_id)
+    leaderboard = []
+    for s in sandboxes:
+        m = calculate_sandbox_metrics(str(s["sandbox_id"]), user_id=user_id)
+        if m:
+            leaderboard.append(m)
+            
+    leaderboard.sort(key=lambda x: x.get("total_return_pct", 0.0), reverse=True)
+    for idx, item in enumerate(leaderboard):
+        item["rank"] = idx + 1
+    return leaderboard
+
