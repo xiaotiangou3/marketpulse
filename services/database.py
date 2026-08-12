@@ -4,7 +4,6 @@ import threading
 from typing import Callable, Optional
 import yfinance as yf
 import agent
-from .vector_store import get_embedding_provider
 
 _scheduler_lock = threading.Lock()
 import os
@@ -527,7 +526,7 @@ def update_news_suggestions(news_id: str, suggestions: str):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE market_newsget_embedding_provider
+                UPDATE market_news
                 SET action_suggestions = %s
                 WHERE news_id = %s;
                 """,
@@ -544,26 +543,22 @@ def update_news_suggestions(news_id: str, suggestions: str):
 def get_market_news_by_id(news_id: str) -> dict:
     conn = get_db_connection()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT news_id, ticker, title, source, url, summary, published_at, action_suggestions, created_at
-                FROM market_news
-                WHERE news_id = %s;
-                """,
-                (news_id,)
-            )
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM market_news WHERE news_id = %s;", (news_id,))
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return {}
+            colnames = [desc[0] for desc in cur.description]
+            return dict(zip(colnames, row))
     finally:
         release_db_connection(conn)
 
-def add_stock_holding(ticker: str, shares: float, cost_basis: float) -> str:
-    """Adds a holding to the database and converts ticker to uppercase."""
-    return add_holding(ticker.upper().strip(), shares, cost_basis)
+def add_stock_holding(symbol: str, shares: float, avg_price: float) -> str:
+    """Adds a holding and returns the new holding ID."""
+    return add_holding(symbol, shares, avg_price)
 
 def get_stock_holdings() -> list[dict]:
-    """Retrieves all active holdings."""
+    """Retrieves all user holdings."""
     return get_holdings()
 
 def remove_stock_holding(holding_id: str):
@@ -571,13 +566,14 @@ def remove_stock_holding(holding_id: str):
     remove_holding(holding_id)
 
 def save_investment_strategy(strategy_text: str) -> str:
-    """Generates embedding for a strategy text and saves it to the """
+    """Generates embedding for a strategy text and saves it to the database."""
+    from .vector_store import get_embedding_provider
     strategy_text = strategy_text.strip()
     if not strategy_text:
         raise ValueError("Strategy text cannot be empty.")
     
     print(f"Generating embedding for strategy rule: '{strategy_text[:40]}...'")
-    embedding = ().get_embedding(strategy_text)
+    embedding = get_embedding_provider().get_embedding(strategy_text)
     return save_strategy(strategy_text, embedding)
 
 def get_investment_strategies() -> list[dict]:
@@ -589,6 +585,7 @@ def update_strategy_by_reference(target: str, new_text: str) -> str:
     Locates the strategy rule by target index/descriptor, generates embedding,
     and updates it in CockroachDB. Returns a confirmation message.
     """
+    from .vector_store import get_embedding_provider
     current_strats = get_strategies()
     matching_id = agent.resolve_strategy_match(target, current_strats)
     if not matching_id:
@@ -912,7 +909,12 @@ def conduct_portfolio_analysis(ticker, status_callback: Optional[Callable[[str, 
     )
     
     print(f"Analysis completed successfully in {elapsed_time:.2f}s!")
-    return synthesis
+    return {
+        "bull": debate_res['bull'],
+        "bear": debate_res['bear'],
+        "synthesis": synthesis,
+        "docs_context": docs_context
+    }
 
 # ==========================================
 # PAPER TRADING AUDIT LOGGING

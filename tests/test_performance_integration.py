@@ -1,5 +1,7 @@
 import sys
-import database
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import services.database as database
 import services
 import providers
 import agent
@@ -12,10 +14,8 @@ class MockEmbeddingProvider(providers.EmbeddingProvider):
     def get_embedding(self, text: str) -> list[float]:
         return [0.05] * 768
 
-services._embedding_provider = MockEmbeddingProvider()
-
 # Mock route_user_intent to resolve performance analysis
-def mock_route_user_intent(user_prompt: str, has_uploaded_file: bool) -> agent.RouterOutput:
+def mock_route_user_intent(user_prompt: str, *args, **kwargs) -> agent.RouterOutput:
     user_prompt_lower = user_prompt.lower()
     actions = []
     
@@ -26,15 +26,16 @@ def mock_route_user_intent(user_prompt: str, has_uploaded_file: bool) -> agent.R
         
     return agent.RouterOutput(explanation="Mock routing for performance testing", actions=actions)
 
-agent.route_user_intent = mock_route_user_intent
-
 # Mock synthesis response
 def mock_synthesize_chat_response(user_prompt: str, results_summary: str, *args, **kwargs) -> str:
     return f"Synthesized Response:\n{results_summary}"
 
-agent.synthesize_chat_response = mock_synthesize_chat_response
-
 def main():
+    # Inject mocks for standalone run
+    services._embedding_provider = MockEmbeddingProvider()
+    agent.route_user_intent = mock_route_user_intent
+    agent.synthesize_chat_response = mock_synthesize_chat_response
+
     print("==================================================")
     print("   MARKETPULSE PERFORMANCE & METRICS TEST SUITE   ")
     print("   (Deterministic Math & Log Database Validation)")
