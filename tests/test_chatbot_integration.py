@@ -1,5 +1,7 @@
 import sys
-import database
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import services.database as database
 import services
 import providers
 import agent
@@ -65,11 +67,8 @@ class MockEmbeddingProvider(providers.EmbeddingProvider):
     def get_embedding(self, text: str) -> list[float]:
         return [0.05] * 768
 
-# Override services embedding provider
-services._embedding_provider = MockEmbeddingProvider()
-
 # We mock agent.route_user_intent to return different structured actions based on prompt keywords
-def mock_route_user_intent(user_prompt: str, has_uploaded_file: bool) -> agent.RouterOutput:
+def mock_route_user_intent(user_prompt: str, *args, **kwargs) -> agent.RouterOutput:
     user_prompt_lower = user_prompt.lower()
     actions = []
     explanation = f"Mock routed user prompt: '{user_prompt}'"
@@ -94,8 +93,6 @@ def mock_route_user_intent(user_prompt: str, has_uploaded_file: bool) -> agent.R
         
     return agent.RouterOutput(explanation=explanation, actions=actions)
 
-agent.route_user_intent = mock_route_user_intent
-
 # Mock synthesis response
 def mock_synthesize_chat_response(user_prompt: str, results_summary: str, *args, **kwargs) -> str:
     return (
@@ -104,15 +101,17 @@ def mock_synthesize_chat_response(user_prompt: str, results_summary: str, *args,
         f"**Summary of Tool Executed Findings:**\n{results_summary}"
     )
 
-agent.synthesize_chat_response = mock_synthesize_chat_response
-
 # Mock direct LLM call for conversational prompts
 def mock_generate_ai_response(prompt: str, system_instruction: str = None) -> str:
     return "Hello! I am MarketPulse AI. How can I help you research your portfolio today?"
 
-agent.generate_ai_response = mock_generate_ai_response
-
 def main():
+    # Inject mocks for standalone run
+    services._embedding_provider = MockEmbeddingProvider()
+    agent.route_user_intent = mock_route_user_intent
+    agent.synthesize_chat_response = mock_synthesize_chat_response
+    agent.generate_ai_response = mock_generate_ai_response
+
     print("==================================================")
     print("   MARKETPULSE AI CHATBOT ROUTING TEST SUITE      ")
     print("   (Mock API Calls - Local Database verification)")
@@ -158,7 +157,10 @@ def main():
         # Step 6: Test routing Ingestion with file bytes
         print("\n[Step 6] Testing chatbot prompt: 'Ingest transcript for MSFT' (with mock file uploaded)...")
         mock_pdf = make_simple_pdf()
-        res = services.run_chatbot_session("Ingest transcript for MSFT", "test_transcript.pdf", mock_pdf)
+        res = services.run_chatbot_session(
+            "Ingest transcript for MSFT",
+            uploaded_files=[{"name": "test_transcript.pdf", "bytes": mock_pdf}]
+        )
         print(f"  [+] Chatbot Response:\n{res['response']}")
         print(f"  [+] Actions resolved: {res['router']['actions']}")
         # The upload will warn about Supabase RLS and proceed to process locally

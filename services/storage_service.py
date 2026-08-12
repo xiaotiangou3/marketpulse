@@ -149,11 +149,11 @@ def ingest_pdf_transcript(file_name: str, file_data: bytes, ticker: str):
     print(f"Ingesting PDF transcript '{file_name}' for {ticker}...")
     
     # 1. Upload to Supabase Storage
-    storage_path = storage.upload_pdf_to_supabase(file_name, file_data)
+    storage_path = upload_pdf_to_supabase(file_name, file_data)
     print(f"  [+] Uploaded to Supabase Storage: {storage_path}")
     
     # 2. Extract and split text recursively
-    chunks = storage.process_pdf_into_chunks(file_data, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+    chunks = process_pdf_into_chunks(file_data, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
     print(f"  [+] Processed PDF into {len(chunks)} chunks.")
     
     if not chunks:
@@ -161,6 +161,7 @@ def ingest_pdf_transcript(file_name: str, file_data: bytes, ticker: str):
         return
         
     # 3. Generate embeddings for each chunk
+    from .vector_store import get_embedding_provider
     embed_provider = get_embedding_provider()
     for chunk in chunks:
         chunk_text = chunk["chunk_text"]

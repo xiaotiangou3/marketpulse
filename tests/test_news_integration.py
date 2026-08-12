@@ -1,6 +1,8 @@
 import sys
+import os
 import datetime
-import database
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import services.database as database
 import services
 import providers
 import agent
@@ -32,18 +34,21 @@ class MockNewsProvider(providers.NewsProvider):
             }
         ]
 
-# Inject mocks
-services._embedding_provider = MockEmbeddingProvider()
-services.get_news_provider = lambda: MockNewsProvider()
-
-# Mock AI suggestions helper in agent
-agent.generate_news_suggestions = lambda news_title, news_summary, holdings_str, strategies_str: (
-    f"### Mock AI suggestions for: {news_title}\n\n"
-    f"- **Strategic Impact**: Ticker details show user holdings align with current growth.\n"
-    f"- **Suggested Action**: Monitor strategies context closely."
-)
-
 def main():
+    # Inject mocks for standalone run
+    import services.news_service as news_svc
+    news_svc._news_provider = MockNewsProvider()
+    news_svc.get_news_provider = lambda: MockNewsProvider()
+    services._embedding_provider = MockEmbeddingProvider()
+    services.get_news_provider = lambda: MockNewsProvider()
+
+    # Mock AI suggestions helper in agent
+    agent.generate_news_suggestions = lambda news_title, news_summary, holdings_str, strategies_str: (
+        f"### Mock AI suggestions for: {news_title}\n\n"
+        f"- **Strategic Impact**: Ticker details show user holdings align with current growth.\n"
+        f"- **Suggested Action**: Monitor strategies context closely."
+    )
+
     print("==================================================")
     print("   MARKETPULSE AI NEWS INTEGRATION TEST SUITE     ")
     print("==================================================")

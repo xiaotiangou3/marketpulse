@@ -1,6 +1,8 @@
 import sys
+import os
 import io
-import database
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import services.database as database
 import services
 
 def make_simple_pdf():

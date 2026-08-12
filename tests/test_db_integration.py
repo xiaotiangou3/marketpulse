@@ -1,6 +1,8 @@
 import sys
+import os
 import io
-import database
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import services.database as database
 import services
 import providers
 import agent
@@ -13,24 +15,6 @@ class MockEmbeddingProvider(providers.EmbeddingProvider):
     def get_embedding(self, text: str) -> list[float]:
         # Returns a deterministic 768-dimensional mock vector
         return [0.05] * 768
-
-# Override services embedding provider
-services._embedding_provider = MockEmbeddingProvider()
-
-# Mock generative AI responses to bypass rate limits
-agent.run_parallel_debate = lambda ticker, holdings, news, strategy, docs: {
-    "bull": "Mock Bull Case: MSFT has strong growth prospects and Azure adoption is high.",
-    "bear": "Mock Bear Case: MSFT faces high valuation and macro headwind risks."
-}
-agent.synthesize_debate = lambda ticker, bull, bear: (
-    "### Mock Synthesized Investment Report: MSFT\n\n"
-    "1. Executive Summary: Both cases show strong elements. Ingested docs: Azure is accelerating.\n"
-    "2. Strategy Alignment: High alignment."
-)
-agent.run_macro_stress_test = lambda scenario, holdings, strategies: (
-    "### Mock Macro Stress Risk Report\n\n"
-    f"Simulating scenario: {scenario}. Estimated direction: negative."
-)
 
 def make_simple_pdf():
     # A basic valid PDF structure containing a single page of text
@@ -86,6 +70,22 @@ def make_simple_pdf():
     return pdf_content
 
 def main():
+    # Inject mocks for standalone run
+    services._embedding_provider = MockEmbeddingProvider()
+    agent.run_parallel_debate = lambda ticker, holdings, news, strategy, docs: {
+        "bull": "Mock Bull Case: MSFT has strong growth prospects and Azure adoption is high.",
+        "bear": "Mock Bear Case: MSFT faces high valuation and macro headwind risks."
+    }
+    agent.synthesize_debate = lambda ticker, bull, bear: (
+        "### Mock Synthesized Investment Report: MSFT\n\n"
+        "1. Executive Summary: Both cases show strong elements. Ingested docs: Azure is accelerating.\n"
+        "2. Strategy Alignment: High alignment."
+    )
+    agent.run_macro_stress_test = lambda scenario, holdings, strategies: (
+        "### Mock Macro Stress Risk Report\n\n"
+        f"Simulating scenario: {scenario}. Estimated direction: negative."
+    )
+
     print("==================================================")
     print("   MARKETPULSE DATABASE & SCHEMAS TEST SUITE      ")
     print("   (Mock Embeddings & Mock LLMs - Zero Quota Cost)")

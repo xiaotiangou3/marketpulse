@@ -5,8 +5,10 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 import services.database as database
+import services.alpaca_service as alpaca_service
 import services
 import config
+
 
 # Set up page configurations
 st.set_page_config(
@@ -241,254 +243,496 @@ def show_add_strategy_dialog():
 
 def inject_slash_command_palette():
     palette_html = """
-    <style>
-        .mp-palette-popup {
-            position: absolute;
-            bottom: calc(100% + 10px);
-            left: 0;
-            right: 0;
-            background: rgba(15, 23, 42, 0.95);
-            border: 1px solid #334155;
-            border-radius: 12px;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
-            padding: 8px;
-            z-index: 999999;
-            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-height: 290px;
-            overflow-y: auto;
-            backdrop-filter: blur(12px);
-        }
-        .mp-palette-header {
-            padding: 4px 8px 6px;
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #94a3b8;
-            border-bottom: 1px solid #1e293b;
-            margin-bottom: 6px;
-            display: flex;
-            justify-content: space-between;
-        }
-        .mp-palette-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            margin-bottom: 2px;
-            border: 1px solid transparent;
-            transition: all 0.15s ease;
-        }
-        .mp-palette-item:hover, .mp-palette-item.active {
-            background: #1e293b;
-            border-color: #475569;
-        }
-    </style>
     <script>
     (function() {
-        const parentDoc = window.parent.document;
-        
-        const commands = [
-            {
-                cmd: "/debate",
-                template: "/debate ",
-                icon: "⚔️",
-                badge: "stock / topic",
-                title: "Bull vs. Bear Debate",
-                desc: "Debate upside catalysts vs downside risks based on news"
-            },
-            {
-                cmd: "/stress",
-                template: "/stress ",
-                icon: "🌪️",
-                badge: "macro scenario",
-                title: "Macro Stress Test",
-                desc: "Simulate portfolio impact under macro / economic shocks"
-            },
-            {
-                cmd: "/performance",
-                template: "/performance",
-                icon: "📊",
-                badge: "portfolio",
-                title: "Performance & Returns",
-                desc: "Calculate total portfolio valuation, P&L, and allocations"
-            },
-            {
-                cmd: "/help",
-                template: "/help",
-                icon: "💡",
-                badge: "guide",
-                title: "Commands Reference",
-                desc: "Display reference manual and example commands"
-            }
-        ];
+        try {
+            const parentDoc = window.parent.document;
+            const parentWin = window.parent;
+            if (!parentDoc || !parentWin) return;
 
-        let activeIndex = 0;
-        let visibleCommands = [];
-
-        function getOrCreatePalette() {
-            let palette = parentDoc.getElementById("mp-slash-palette");
-            if (!palette) {
-                palette = parentDoc.createElement("div");
-                palette.id = "mp-slash-palette";
-                palette.className = "mp-palette-popup";
-                palette.style.display = "none";
-                
-                const header = parentDoc.createElement("div");
-                header.className = "mp-palette-header";
-                header.innerHTML = "<span>⚡ MarketPulse Commands</span><span>↑↓ Navigate • Tab/Click Select • Esc Close</span>";
-                palette.appendChild(header);
-
-                const listContainer = parentDoc.createElement("div");
-                listContainer.id = "mp-palette-list";
-                palette.appendChild(listContainer);
-            }
-            return palette;
-        }
-
-        function setNativeValue(element, value) {
-            const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
-            const prototype = Object.getPrototypeOf(element);
-            const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-            
-            if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
-                prototypeValueSetter.call(element, value);
-            } else if (valueSetter) {
-                valueSetter.call(element, value);
-            } else {
-                element.value = value;
-            }
-            element.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-
-        function selectCommand(textarea, cmdObj) {
-            setNativeValue(textarea, cmdObj.template);
-            hidePalette();
-            setTimeout(() => {
-                textarea.focus();
-                textarea.setSelectionRange(cmdObj.template.length, cmdObj.template.length);
-            }, 50);
-        }
-
-        function renderItems(textarea) {
-            const palette = getOrCreatePalette();
-            const list = palette.querySelector("#mp-palette-list");
-            if (!list) return;
-            list.innerHTML = "";
-
-            visibleCommands.forEach((cmd, idx) => {
-                const item = parentDoc.createElement("div");
-                item.className = "mp-palette-item" + (idx === activeIndex ? " active" : "");
-
-                item.innerHTML = `
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span style="font-size: 16px;">${cmd.icon}</span>
-                        <div>
-                            <div style="display: flex; align-items: center; gap: 6px;">
-                                <span style="font-weight: 700; font-size: 13px; color: #38bdf8;">${cmd.cmd}</span>
-                                <span style="font-size: 11px; background: #334155; color: #cbd5e1; padding: 1px 6px; border-radius: 4px; font-family: monospace;">${cmd.badge}</span>
-                            </div>
-                            <div style="font-size: 12px; color: #94a3b8; margin-top: 1px;">${cmd.desc}</div>
-                        </div>
-                    </div>
+            // 1. Inject styles into parent document head if not present
+            let styles = parentDoc.getElementById("mp-slash-palette-styles");
+            if (!styles) {
+                styles = parentDoc.createElement("style");
+                styles.id = "mp-slash-palette-styles";
+                styles.innerHTML = `
+                    .mp-palette-popup {
+                        position: fixed !important;
+                        background: #0f172a !important;
+                        border: 2px solid #38bdf8 !important;
+                        border-radius: 12px !important;
+                        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.95), 0 0 20px rgba(56, 189, 248, 0.3) !important;
+                        padding: 8px !important;
+                        z-index: 2147483647 !important;
+                        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+                        max-height: 290px !important;
+                        overflow-y: auto !important;
+                        box-sizing: border-box !important;
+                        pointer-events: auto !important;
+                        width: 450px !important;
+                    }
+                    .mp-palette-header {
+                        padding: 6px 10px 8px !important;
+                        font-size: 11px !important;
+                        font-weight: 700 !important;
+                        text-transform: uppercase !important;
+                        letter-spacing: 0.05em !important;
+                        color: #94a3b8 !important;
+                        border-bottom: 1px solid #1e293b !important;
+                        margin-bottom: 6px !important;
+                        display: flex !important;
+                        justify-content: space-between !important;
+                    }
+                    .mp-palette-item {
+                        display: flex !important;
+                        align-items: center !important;
+                        justify-content: space-between !important;
+                        padding: 10px 12px !important;
+                        border-radius: 8px !important;
+                        cursor: pointer !important;
+                        margin-bottom: 4px !important;
+                        border: 1px solid transparent !important;
+                        transition: background 0.1s ease, border-color 0.1s ease !important;
+                        background: transparent !important;
+                        color: #cbd5e1 !important;
+                    }
+                    .mp-palette-item.active {
+                        background: #1e293b !important;
+                        border-color: #38bdf8 !important;
+                        color: #ffffff !important;
+                    }
                 `;
+                parentDoc.head.appendChild(styles);
+            }
 
-                item.addEventListener("mouseenter", () => {
-                    activeIndex = idx;
-                    renderItems(textarea);
-                });
-
-                item.addEventListener("mousedown", (e) => {
-                    e.preventDefault();
-                    selectCommand(textarea, cmd);
-                });
-
-                list.appendChild(item);
-            });
-        }
-
-        function showPalette(textarea) {
-            const palette = getOrCreatePalette();
-            const container = textarea.closest('div[data-testid="stChatInput"]') || textarea.parentElement;
-            if (container) {
-                if (container.style.position !== "relative" && container.style.position !== "absolute") {
-                    container.style.position = "relative";
+            const commands = [
+                {
+                    cmd: "/debate",
+                    template: "/debate ",
+                    icon: "⚔️",
+                    badge: "stock / topic",
+                    title: "Bull vs. Bear Debate",
+                    desc: "Debate upside catalysts vs downside risks based on news"
+                },
+                {
+                    cmd: "/stress",
+                    template: "/stress ",
+                    icon: "🌪️",
+                    badge: "macro scenario",
+                    title: "Macro Stress Test",
+                    desc: "Simulate portfolio impact under macro / economic shocks"
+                },
+                {
+                    cmd: "/backtest",
+                    template: "/backtest ",
+                    icon: "📈",
+                    badge: "ticker / strategy",
+                    title: "Strategy Backtest",
+                    desc: "Simulate quantitative strategies (RSI, MACD, SMA, etc.)"
+                },
+                {
+                    cmd: "/trade",
+                    template: "/trade ",
+                    icon: "🧪",
+                    badge: "paper trade",
+                    title: "Paper Trade",
+                    desc: "Execute paper order via Alpaca Sandbox API"
+                },
+                {
+                    cmd: "/performance",
+                    template: "/performance",
+                    icon: "📊",
+                    badge: "portfolio",
+                    title: "Performance & Returns",
+                    desc: "Calculate total portfolio valuation, P&L, and allocations"
+                },
+                {
+                    cmd: "/help",
+                    template: "/help",
+                    icon: "💡",
+                    badge: "guide",
+                    title: "Commands Reference",
+                    desc: "Display reference manual and example commands"
                 }
-                if (!container.contains(palette)) {
-                    container.appendChild(palette);
+            ];
+
+            let activeIndex = 0;
+            let visibleCommands = [];
+            let currentTextarea = null;
+
+            function getOrCreatePalette() {
+                let palette = parentDoc.getElementById("mp-slash-palette");
+                if (!palette) {
+                    palette = parentDoc.createElement("div");
+                    palette.id = "mp-slash-palette";
+                    palette.className = "mp-palette-popup";
+                    palette.style.display = "none";
+
+                    const header = parentDoc.createElement("div");
+                    header.className = "mp-palette-header";
+                    header.innerHTML = "<span>⚡ MarketPulse Commands</span><span>↑↓ Navigate • Tab/Click Select • Esc Close</span>";
+                    palette.appendChild(header);
+
+                    const listContainer = parentDoc.createElement("div");
+                    listContainer.id = "mp-palette-list";
+                    palette.appendChild(listContainer);
+
+                    parentDoc.body.appendChild(palette);
+                } else if (palette.parentElement !== parentDoc.body) {
+                    parentDoc.body.appendChild(palette);
                 }
-                renderItems(textarea);
+                return palette;
+            }
+
+            function setNativeValue(element, value) {
+                const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+                const prototype = Object.getPrototypeOf(element);
+                const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+                
+                if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+                    prototypeValueSetter.call(element, value);
+                } else if (valueSetter) {
+                    valueSetter.call(element, value);
+                } else {
+                    element.value = value;
+                }
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            function selectCommand(textarea, cmdObj) {
+                const text = textarea.value || "";
+                const cursorPos = textarea.selectionStart ?? text.length;
+                const beforeCursor = text.slice(0, cursorPos);
+                const afterCursor = text.slice(cursorPos);
+                const lastSlash = beforeCursor.lastIndexOf("/");
+                
+                let newText = "";
+                let newCursorPos = 0;
+                if (lastSlash !== -1) {
+                    const prefix = text.slice(0, lastSlash);
+                    newText = prefix + cmdObj.template + afterCursor;
+                    newCursorPos = (prefix + cmdObj.template).length;
+                } else {
+                    newText = cmdObj.template;
+                    newCursorPos = cmdObj.template.length;
+                }
+                
+                setNativeValue(textarea, newText);
+                hidePalette();
+                setTimeout(() => {
+                    textarea.focus();
+                    textarea.setSelectionRange(newCursorPos, newCursorPos);
+                }, 50);
+            }
+
+            function renderItems(textarea, shouldScroll = false) {
+                const palette = getOrCreatePalette();
+                const list = palette.querySelector("#mp-palette-list");
+                if (!list) return;
+                list.innerHTML = "";
+
+                visibleCommands.forEach((cmd, idx) => {
+                    const item = parentDoc.createElement("div");
+                    const isActive = idx === activeIndex;
+                    item.className = "mp-palette-item" + (isActive ? " active" : "");
+
+                    item.innerHTML = `
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 16px;">${cmd.icon}</span>
+                            <div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span style="font-weight: 700; font-size: 13px; color: ${isActive ? "#38bdf8" : "#94a3b8"};">${cmd.cmd}</span>
+                                    <span style="font-size: 11px; background: #334155; color: #cbd5e1; padding: 1px 6px; border-radius: 4px; font-family: monospace;">${cmd.badge}</span>
+                                </div>
+                                <div style="font-size: 12px; color: ${isActive ? "#f1f5f9" : "#64748b"}; margin-top: 1px;">${cmd.desc}</div>
+                            </div>
+                        </div>
+                    `;
+
+                    item.addEventListener("mousemove", () => {
+                        if (activeIndex !== idx) {
+                            activeIndex = idx;
+                            renderItems(textarea, false);
+                        }
+                    });
+
+                    item.addEventListener("mousedown", (e) => {
+                        e.preventDefault();
+                        selectCommand(textarea, cmd);
+                    });
+
+                    list.appendChild(item);
+
+                    if (isActive && shouldScroll) {
+                        setTimeout(() => {
+                            item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                        }, 10);
+                    }
+                });
+            }
+
+            function positionPalette(textarea) {
+                const palette = getOrCreatePalette();
+                const container = textarea.closest('div[data-testid="stChatInput"]') || textarea.parentElement;
+                const targetRect = container ? container.getBoundingClientRect() : textarea.getBoundingClientRect();
+                
+                palette.style.position = "fixed";
+                palette.style.left = targetRect.left + "px";
+                palette.style.width = Math.max(targetRect.width, 320) + "px";
+                palette.style.bottom = (parentWin.innerHeight - targetRect.top + 8) + "px";
+                palette.style.top = "auto";
+                palette.style.zIndex = "2147483647";
+            }
+
+            function showPalette(textarea) {
+                currentTextarea = textarea;
+                const palette = getOrCreatePalette();
+                positionPalette(textarea);
+                renderItems(textarea, true);
                 palette.style.display = "block";
             }
-        }
 
-        function hidePalette() {
-            const palette = parentDoc.getElementById("mp-slash-palette");
-            if (palette) {
-                palette.style.display = "none";
-            }
-        }
-
-        function attachListener() {
-            const textarea = parentDoc.querySelector('div[data-testid="stChatInput"] textarea') || parentDoc.querySelector('[data-testid="stChatInputTextArea"]');
-            if (!textarea || textarea.dataset.slashBound === "true") return;
-
-            textarea.dataset.slashBound = "true";
-
-            textarea.addEventListener("input", () => {
-                const val = textarea.value;
-                if (val.startsWith("/")) {
-                    const search = val.trim().toLowerCase();
-                    visibleCommands = commands.filter(c => c.cmd.toLowerCase().startsWith(search) || search === "/" || c.cmd.toLowerCase().includes(search));
-                    if (visibleCommands.length > 0) {
-                        activeIndex = 0;
-                        showPalette(textarea);
-                    } else {
-                        hidePalette();
-                    }
-                } else {
-                    hidePalette();
+            function hidePalette() {
+                const palette = parentDoc.getElementById("mp-slash-palette");
+                if (palette) {
+                    palette.style.display = "none";
                 }
-            });
+            }
 
-            textarea.addEventListener("keydown", (e) => {
+            function handleInputOrFocus(e) {
+                const target = e.target;
+                if (!target || target.tagName !== "TEXTAREA") return;
+                
+                const isChatInput = target.closest('div[data-testid="stChatInput"]') || 
+                                   target.getAttribute("data-testid") === "stChatInputTextArea" ||
+                                   target.placeholder?.toLowerCase().includes("ask") ||
+                                   target.placeholder?.toLowerCase().includes("/");
+                if (!isChatInput) return;
+
+                const val = target.value || "";
+                const cursorPos = target.selectionStart ?? val.length;
+                const textBeforeCursor = val.slice(0, cursorPos);
+                const lastSlashIndex = textBeforeCursor.lastIndexOf("/");
+
+                if (lastSlashIndex !== -1) {
+                    const charBeforeSlash = lastSlashIndex > 0 ? textBeforeCursor[lastSlashIndex - 1] : " ";
+                    const isWordStart = /\s/.test(charBeforeSlash) || lastSlashIndex === 0;
+                    const searchWord = textBeforeCursor.slice(lastSlashIndex);
+
+                    if (isWordStart && !/\s/.test(searchWord)) {
+                        const search = searchWord.trim().toLowerCase();
+                        visibleCommands = commands.filter(c => c.cmd.toLowerCase().startsWith(search) || search === "/" || c.cmd.toLowerCase().includes(search));
+                        if (visibleCommands.length > 0) {
+                            if (activeIndex >= visibleCommands.length) activeIndex = 0;
+                            showPalette(target);
+                            return;
+                        }
+                    }
+                }
+                hidePalette();
+            }
+
+            function handleKeydown(e) {
                 const palette = parentDoc.getElementById("mp-slash-palette");
                 const isOpen = palette && palette.style.display === "block";
 
-                if (isOpen) {
+                if (isOpen && currentTextarea) {
                     if (e.key === "ArrowDown") {
                         e.preventDefault();
+                        e.stopPropagation();
                         activeIndex = (activeIndex + 1) % visibleCommands.length;
-                        renderItems(textarea);
+                        renderItems(currentTextarea, true);
                     } else if (e.key === "ArrowUp") {
                         e.preventDefault();
+                        e.stopPropagation();
                         activeIndex = (activeIndex - 1 + visibleCommands.length) % visibleCommands.length;
-                        renderItems(textarea);
-                    } else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && textarea.value.trim().indexOf(" ") === -1 && visibleCommands.length > 0)) {
-                        if (visibleCommands[activeIndex] && textarea.value.trim() !== visibleCommands[activeIndex].template.trim()) {
+                        renderItems(currentTextarea, true);
+                    } else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && visibleCommands.length > 0)) {
+                        const text = currentTextarea.value || "";
+                        const cursorPos = currentTextarea.selectionStart ?? text.length;
+                        const textBeforeCursor = text.slice(0, cursorPos);
+                        const lastSlashIndex = textBeforeCursor.lastIndexOf("/");
+                        const searchWord = lastSlashIndex !== -1 ? textBeforeCursor.slice(lastSlashIndex) : "";
+                        
+                        if (lastSlashIndex !== -1 && !/\s/.test(searchWord)) {
                             e.preventDefault();
-                            selectCommand(textarea, visibleCommands[activeIndex]);
+                            e.stopPropagation();
+                            selectCommand(currentTextarea, visibleCommands[activeIndex]);
                         }
                     } else if (e.key === "Escape") {
                         e.preventDefault();
+                        e.stopPropagation();
                         hidePalette();
                     }
                 }
-            });
+            }
 
-            textarea.addEventListener("blur", () => {
-                setTimeout(hidePalette, 250);
+
+
+            // Global capture-phase listeners on parent document
+            parentDoc.removeEventListener("input", handleInputOrFocus, true);
+            parentDoc.removeEventListener("focusin", handleInputOrFocus, true);
+            parentDoc.removeEventListener("click", handleInputOrFocus, true);
+            parentDoc.removeEventListener("keydown", handleKeydown, true);
+
+            parentDoc.addEventListener("input", handleInputOrFocus, true);
+            parentDoc.addEventListener("focusin", handleInputOrFocus, true);
+            parentDoc.addEventListener("click", handleInputOrFocus, true);
+            parentDoc.addEventListener("keydown", handleKeydown, true);
+
+            parentWin.addEventListener("resize", () => {
+                if (currentTextarea) positionPalette(currentTextarea);
             });
+            parentDoc.addEventListener("scroll", () => {
+                if (currentTextarea) positionPalette(currentTextarea);
+            }, true);
+
+            // Reposition & check on interval
+            setInterval(() => {
+                if (currentTextarea) {
+                    if (!currentTextarea.isConnected) {
+                        hidePalette();
+                        currentTextarea = null;
+                    } else {
+                        const palette = parentDoc.getElementById("mp-slash-palette");
+                        if (palette && palette.style.display === "block") {
+                            positionPalette(currentTextarea);
+                        }
+                    }
+                }
+            }, 300);
+
+        } catch (e) {
+            console.error("Slash command palette error:", e);
         }
-
-        attachListener();
-        setInterval(attachListener, 1000);
     })();
     </script>
     """
     components.html(palette_html, height=0, width=0)
+
+
+
+
+def render_backtest_card(bt_data: dict):
+    """Renders an inline quantitative strategy validation card with KPI metrics and cumulative performance chart."""
+    if not bt_data or bt_data.get("error"):
+        return
+        
+    with st.container(border=True):
+        outperformed = bt_data.get("outperformed", False)
+        ticker = bt_data.get("ticker", "ASSET")
+        period = bt_data.get("period", "1y")
+        strat_name = bt_data.get("strategy_name", "Quantitative Strategy")
+        cond_summary = bt_data.get("condition_summary", "Technical trading rule simulation")
+        strat_type = bt_data.get("strategy_type", "sma_cross").lower()
+        
+        # Determine icon based on strategy type
+        icon_map = {
+            "rsi": "⚡",
+            "macd": "📊",
+            "ema_cross": "📈",
+            "bollinger": "🎯",
+            "breakout": "🚀",
+            "sma_cross": "📊"
+        }
+        icon = icon_map.get(strat_type, "📈")
+        
+        header_col, badge_col = st.columns([2, 1])
+        with header_col:
+            st.markdown(f"#### {icon} **{strat_name}: {ticker}**")
+            st.caption(f"**Rule Logic**: {cond_summary} | **Timeframe**: {period} *(1-Day Shift / Zero Lookahead Bias)*")
+        with badge_col:
+            if outperformed:
+                st.markdown(
+                    """
+                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10B981; border-radius: 8px; padding: 6px 12px; text-align: center; color: #10B981; font-weight: 600; font-size: 0.85rem;">
+                        🟢 Outperformed Benchmark
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    """
+                    <div style="background: rgba(245, 158, 11, 0.15); border: 1px solid #F59E0B; border-radius: 8px; padding: 6px 12px; text-align: center; color: #F59E0B; font-weight: 600; font-size: 0.85rem;">
+                        ⚠️ Underperformed Benchmark
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+        st.markdown("---")
+        
+        # 4 KPI Metrics
+        m1, m2, m3, m4 = st.columns(4)
+        strat_ret = bt_data.get("Strategy_Return_Pct", 0.0)
+        bh_ret = bt_data.get("Buy_Hold_Return_Pct", 0.0)
+        win_rate = bt_data.get("Win_Rate_Pct", 0.0)
+        max_dd = bt_data.get("Max_Drawdown_Pct", 0.0)
+        
+        m1.metric("Strategy Return", f"{strat_ret:+.2f}%", delta=f"{strat_ret - bh_ret:+.2f}% vs. B&H")
+        m2.metric("Buy & Hold Benchmark", f"{bh_ret:+.2f}%")
+        m3.metric("Win Rate", f"{win_rate:.2f}%")
+        m4.metric("Max Drawdown", f"{max_dd:.2f}%")
+        
+        # Cumulative returns comparison line chart
+        chart_data = bt_data.get("chart_data")
+        if chart_data:
+            try:
+                chart_df = pd.DataFrame(chart_data).set_index("Date")
+                st.markdown("##### 📈 Cumulative Performance Comparison (%)")
+                st.line_chart(chart_df, color=["#38BDF8", "#94A3B8"])
+            except Exception:
+                pass
+
+def render_trade_receipt_card(trade_data: dict):
+    """Renders an inline paper trade execution summary card with order metadata."""
+    if not trade_data or trade_data.get("error"):
+        return
+        
+    with st.container(border=True):
+        symbol = trade_data.get("symbol", "ASSET")
+        side = str(trade_data.get("side", "BUY")).upper()
+        qty = float(trade_data.get("qty", 0.0))
+        status = str(trade_data.get("status", "ACCEPTED")).upper()
+        order_id = trade_data.get("order_id", "N/A")
+        price = trade_data.get("execution_price")
+        timestamp = trade_data.get("timestamp", "Just now")
+        tif = trade_data.get("time_in_force", "GTC")
+        sbx_name = trade_data.get("sandbox_name")
+        
+        is_buy = (side == "BUY")
+        badge_bg = "rgba(16, 185, 129, 0.15)" if is_buy else "rgba(239, 68, 68, 0.15)"
+        badge_border = "#10B981" if is_buy else "#EF4444"
+        badge_color = "#10B981" if is_buy else "#EF4444"
+        icon = "🟢" if is_buy else "🔴"
+        
+        header_col, badge_col = st.columns([2, 1])
+        with header_col:
+            sbx_badge = f"<span style='background-color: #0369a1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;'>🧪 {sbx_name}</span>" if sbx_name else ""
+            st.markdown(f"#### 🧪 **Alpaca Paper Order: {symbol}** {sbx_badge}", unsafe_allow_html=True)
+            st.caption(f"**Order ID**: `{order_id}` | **Time-in-Force**: `{tif}` | **Timestamp**: {timestamp}")
+        with badge_col:
+            st.markdown(
+                f"""
+                <div style="background: {badge_bg}; border: 1px solid {badge_border}; border-radius: 8px; padding: 6px 12px; text-align: center; color: {badge_color}; font-weight: 600; font-size: 0.85rem;">
+                    {icon} {side} {qty:g} SHARES
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            
+        st.markdown("---")
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Order Side", side)
+        m2.metric("Quantity", f"{qty:g} shares")
+        m3.metric("Execution Price", f"${price:,.2f}" if price else "Market Price")
+        m4.metric("Status", status)
+        
+        st.caption("💡 *Track live positions, cash balance, and virtual equity in the 🧪 **Paper Trading Sandbox** tab.*")
 
 def render_chatbot_page():
     col_header, col_new = st.columns([3, 1])
@@ -552,10 +796,15 @@ def render_chatbot_page():
         with chat_container:
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
+                    if msg.get("backtest_data"):
+                        render_backtest_card(msg["backtest_data"])
+                    if msg.get("trade_data"):
+                        render_trade_receipt_card(msg["trade_data"])
                     st.markdown(msg["content"])
                     
         # Show pending strategy confirmation form if active
         if st.session_state.get("pending_strategy"):
+
             pending = st.session_state.pending_strategy
             st.markdown("🤖 **MarketPulse AI**: I drafted the following strategy update for you. Please review or tweak it before saving:")
             
@@ -603,6 +852,12 @@ def render_chatbot_page():
                                         try:
                                             res_remaining = services.run_remaining_actions(remaining, pending["original_prompt"], status_callback=handle_rem_status)
                                             rem_status.update(label="✅ Continuation actions complete", state="complete", expanded=False)
+                                            
+                                            if res_remaining.get("backtest_data"):
+                                                render_backtest_card(res_remaining["backtest_data"])
+                                            if res_remaining.get("trade_data"):
+                                                render_trade_receipt_card(res_remaining["trade_data"])
+                                                
                                             final_content = res_remaining["response"]
                                             def stream_words(text: str):
                                                 words = text.split(" ")
@@ -612,8 +867,11 @@ def render_chatbot_page():
                                             st.write_stream(stream_words(final_content))
                                             st.session_state.chat_history.append({
                                                 "role": "assistant",
-                                                "content": final_content
+                                                "content": final_content,
+                                                "backtest_data": res_remaining.get("backtest_data"),
+                                                "trade_data": res_remaining.get("trade_data")
                                             })
+
                                             try:
                                                 database.save_chat_message(role="assistant", content=final_content)
                                             except Exception as e:
@@ -654,7 +912,7 @@ def render_chatbot_page():
             disabled=is_pending,
             accept_file="multiple"
         )
-        
+
         if user_input_data:
             user_prompt = ""
             uploaded_files_list = []
@@ -723,6 +981,12 @@ def render_chatbot_page():
                         )
                         status_box.update(label="✅ Analysis & execution complete", state="complete", expanded=False)
                         
+                        # Render inline quantitative backtest validation card if present
+                        if res.get("backtest_data"):
+                            render_backtest_card(res["backtest_data"])
+                        if res.get("trade_data"):
+                            render_trade_receipt_card(res["trade_data"])
+                            
                         def stream_words(text: str):
                             words = text.split(" ")
                             for i, word in enumerate(words):
@@ -737,7 +1001,13 @@ def render_chatbot_page():
                             print(f"Error persisting assistant message: {e}")
                         
                         # Append assistant response
-                        st.session_state.chat_history.append({"role": "assistant", "content": res["response"]})
+                        st.session_state.chat_history.append({
+                            "role": "assistant", 
+                            "content": res["response"],
+                            "backtest_data": res.get("backtest_data"),
+                            "trade_data": res.get("trade_data")
+                        })
+
                         st.session_state.last_router_output = res["router"]
                         if res.get("pending_strategy"):
                             st.session_state.pending_strategy = res["pending_strategy"]
@@ -1079,13 +1349,322 @@ def render_developer_page():
             st.write(f"Error fetching audit trail: {e}")
 
 # ==========================================
+# MULTI-STRATEGY PAPER TRADING SANDBOX PAGE
+# ==========================================
+
+@st.dialog("➕ Create New Strategy Sandbox")
+def show_create_sandbox_dialog(num_sandboxes: int):
+    if num_sandboxes >= 10:
+        st.warning("⚠️ **Maximum limit of 10 strategy sandboxes reached.** Please delete an existing sandbox first.")
+        return
+    st.markdown(f"Configure an isolated sub-ledger to test a new trading strategy. (`{num_sandboxes}/10 Sandboxes Active`)")
+    with st.form("create_sandbox_dialog_form"):
+        sbx_name = st.text_input("Sandbox Name", placeholder="e.g. NVDA RSI Reversal, Tech Momentum, Macro Defense")
+        sbx_desc = st.text_area("Strategy Description (Optional)", placeholder="e.g. Buys when RSI drops below 30, sells above 70")
+        sbx_capital = st.number_input("Initial Virtual Capital ($)", min_value=1000.0, max_value=10000000.0, value=100000.0, step=5000.0)
+        
+        strat_opts = [
+            "General / Discretionary", 
+            "RSI Mean Reversion (rsi)", 
+            "MACD Crossover (macd)", 
+            "SMA Crossover (sma_cross)", 
+            "EMA Crossover (ema_cross)", 
+            "Bollinger Bands (bollinger)", 
+            "Price Breakout (breakout)"
+        ]
+        sel_strat = st.selectbox("Strategy Rule Binding", options=strat_opts)
+        strat_code = sel_strat.split("(")[-1].replace(")", "").strip() if "(" in sel_strat else "general"
+        
+        btn_submit = st.form_submit_button("🚀 Launch Sandbox", type="primary", use_container_width=True)
+        if btn_submit:
+            if not sbx_name.strip():
+                st.error("Please enter a valid sandbox name.")
+            else:
+                try:
+                    new_id = database.create_sandbox(
+                        name=sbx_name.strip(),
+                        description=sbx_desc.strip() if sbx_desc else None,
+                        initial_capital=sbx_capital,
+                        strategy_type=strat_code
+                    )
+                    st.toast(f"✅ Sandbox '{sbx_name}' created successfully!")
+                    st.session_state.selected_sandbox_id = str(new_id)
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to create sandbox: {e}")
+
+def render_paper_trading_page():
+    sandboxes = database.get_sandboxes() if alpaca_service.is_alpaca_configured() else []
+    num_sandboxes = len(sandboxes)
+
+    col_t, col_b1, col_b2 = st.columns([2.4, 1.2, 1.2])
+    with col_t:
+        st.header("🧪 Multi-Strategy Paper Trading Sandbox")
+        st.markdown("Run, monitor, and benchmark up to **10 independent strategy sandboxes** with virtual sub-ledgers and Alpaca paper execution.")
+    with col_b1:
+        st.write("")
+        if st.button("➕ Create New Sandbox", use_container_width=True, type="primary"):
+            show_create_sandbox_dialog(num_sandboxes)
+    with col_b2:
+        st.write("")
+        if st.button("🔄 Refresh Sandbox Data", use_container_width=True):
+            st.toast("Refreshed Paper Trading metrics.")
+            st.rerun()
+
+    if not alpaca_service.is_alpaca_configured():
+        st.warning(
+            """
+            ### ⚠️ Alpaca Paper Trading Credentials Not Configured
+            
+            To enable paper trading orders and portfolio tracking:
+            1. Log into or sign up for free at [Alpaca Markets](https://app.alpaca.markets/paper/dashboard/overview).
+            2. Switch to **Paper Trading** in the top navigation.
+            3. Generate your **API Key** and **Secret Key**.
+            4. Add `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in your `.env` file.
+            """
+        )
+        return
+
+    # 1. Zero-Sandbox Empty State
+    if num_sandboxes == 0:
+        st.markdown(
+            """
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed #38bdf8; border-radius: 12px; padding: 40px; text-align: center; margin: 20px 0;">
+                <h3 style="color: #38bdf8; margin-top: 0;">🧪 No Active Strategy Sandboxes</h3>
+                <p style="color: #94a3b8; font-size: 1rem; max-width: 600px; margin: 0 auto 25px auto;">
+                    You have no paper trading sandboxes created yet. Create a dedicated sandbox to test, isolate, and benchmark individual trading strategies with virtual capital.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        col_emp1, col_emp2, col_emp3 = st.columns([1, 2, 1])
+        with col_emp2:
+            if st.button("➕ Create Your First Strategy Sandbox", type="primary", use_container_width=True):
+                show_create_sandbox_dialog(num_sandboxes)
+        return
+
+    # 2. Multi-Sandbox View Setup
+    valid_ids = [str(s["sandbox_id"]) for s in sandboxes]
+    if "selected_sandbox_id" not in st.session_state or st.session_state.selected_sandbox_id not in valid_ids:
+        st.session_state.selected_sandbox_id = valid_ids[0]
+
+    # Sub-tabs: Active Dashboard vs Leaderboard
+    sub_tab_dashboard, sub_tab_leaderboard = st.tabs([
+        "📊 Active Sandbox Dashboard",
+        "🏆 Strategy Leaderboard"
+    ])
+
+    with sub_tab_dashboard:
+        # Selector & Actions Bar inside Active Dashboard
+        sbx_dict = {str(s["sandbox_id"]): s for s in sandboxes}
+        curr_idx = valid_ids.index(st.session_state.selected_sandbox_id) if st.session_state.selected_sandbox_id in valid_ids else 0
+
+        top_c1, top_c2, top_c3 = st.columns([3, 1, 1])
+        with top_c1:
+            selected_id = st.selectbox(
+                f"Select Active Strategy Sandbox ({num_sandboxes}/10)",
+                options=valid_ids,
+                format_func=lambda sid: f"🧪 {sbx_dict[sid]['name']} (${float(sbx_dict[sid]['cash_balance']):,.0f} Cash | {sbx_dict[sid].get('strategy_type') or 'General'})",
+                index=curr_idx
+            )
+            st.session_state.selected_sandbox_id = selected_id
+            selected_sbx = sbx_dict[selected_id]
+
+        with top_c2:
+            st.write("")
+            if st.button("🔄 Reset", use_container_width=True, help="Reset cash to initial capital and clear open positions"):
+                database.reset_sandbox(selected_id)
+                st.toast(f"✅ Reset sandbox '{selected_sbx['name']}' to ${float(selected_sbx['initial_capital']):,.2f}")
+                time.sleep(0.5)
+                st.rerun()
+
+        with top_c3:
+            st.write("")
+            if st.button("🗑️ Delete", use_container_width=True, help="Delete this strategy sandbox"):
+                database.delete_sandbox(selected_id)
+                st.toast(f"🗑️ Deleted sandbox '{selected_sbx['name']}'")
+                st.session_state.pop("selected_sandbox_id", None)
+                time.sleep(0.5)
+                st.rerun()
+
+        # Compute live metrics for active sandbox
+        metrics = database.calculate_sandbox_metrics(selected_id)
+        if not metrics:
+            st.error("Failed to load metrics for selected sandbox.")
+            return
+
+        trade_logs = database.get_paper_trade_logs(limit=50, sandbox_id=selected_id)
+
+        # 1. Top KPI Metrics Bar
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric(
+            label="Virtual Portfolio Equity",
+            value=f"${metrics['equity']:,.2f}",
+            delta=f"${metrics['total_pl']:+,.2f} ({metrics['total_return_pct']:+.2f}%)"
+        )
+        kpi2.metric(
+            label="Available Cash",
+            value=f"${metrics['cash']:,.2f}"
+        )
+        kpi3.metric(
+            label="Positions Value",
+            value=f"${metrics['positions_value']:,.2f}"
+        )
+        kpi4.metric(
+            label="Bound Strategy",
+            value=f"{metrics.get('strategy_type', 'General').upper()}"
+        )
+
+        st.markdown("---")
+
+        col_left, col_right = st.columns([2, 1])
+
+        with col_left:
+            # Component 2: Active Open Positions Table with In-Row Liquidation
+            st.subheader(f"📊 Active Positions ({selected_sbx['name']})")
+            positions = metrics.get("positions", [])
+            if positions:
+                # Table column headers
+                h_cols = st.columns([1.1, 0.8, 0.9, 1.1, 1.1, 1.2, 1.2, 1.1, 1.3])
+                headers = ["Symbol", "Side", "Shares", "Avg Price", "Current", "Market Val", "P&L ($)", "Return", "Action"]
+                for hc, hname in zip(h_cols, headers):
+                    hc.markdown(f"**{hname}**")
+                
+                st.markdown("<hr style='margin: 4px 0 10px 0; border: 0; border-top: 1px solid rgba(148, 163, 184, 0.2);'>", unsafe_allow_html=True)
+                
+                for idx, p in enumerate(positions):
+                    r_cols = st.columns([1.1, 0.8, 0.9, 1.1, 1.1, 1.2, 1.2, 1.1, 1.3])
+                    r_cols[0].write(p["symbol"])
+                    r_cols[1].write(p["side"].upper())
+                    r_cols[2].write(f"{p['qty']:g}")
+                    r_cols[3].write(f"${p['avg_entry_price']:,.2f}")
+                    r_cols[4].write(f"${p['current_price']:,.2f}")
+                    r_cols[5].write(f"${p['market_value']:,.2f}")
+                    
+                    pl_val = p['unrealized_pl']
+                    pl_color = "#10b981" if pl_val >= 0 else "#ef4444"
+                    r_cols[6].markdown(f"<span style='color:{pl_color}; font-weight:600;'>${pl_val:+,.2f}</span>", unsafe_allow_html=True)
+                    
+                    ret_val = p['unrealized_plpc']
+                    r_cols[7].markdown(f"<span style='color:{pl_color}; font-weight:600;'>{ret_val:+.2f}%</span>", unsafe_allow_html=True)
+                    
+                    with r_cols[8]:
+                        if st.button("⚡ Liquidate", key=f"liq_btn_{selected_id}_{p['symbol']}_{idx}", use_container_width=True, type="secondary"):
+                            try:
+                                close_res = alpaca_service.close_sandbox_position(selected_id, p["symbol"])
+                                st.toast(f"✅ Closed position for {p['symbol']} ({close_res['status'].upper()})")
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to close position: {e}")
+            else:
+                st.info(f"No open positions in **{selected_sbx['name']}**. Use the order form on the right or mention this sandbox in chat to execute trades.")
+
+            st.markdown("---")
+
+            # Component 4: Sandbox Execution Audit Log
+            st.subheader(f"📜 Trade Audit Log ({selected_sbx['name']})")
+            if trade_logs:
+                log_records = []
+                for l in trade_logs:
+                    created_str = l['created_at'].strftime('%Y-%m-%d %H:%M:%S') if hasattr(l['created_at'], 'strftime') else str(l['created_at'])[:19]
+                    price_val = l.get('execution_price')
+                    price_str = f"${float(price_val):,.2f}" if price_val is not None else "Market"
+                    log_records.append({
+                        "Time (UTC)": created_str,
+                        "Symbol": l["symbol"],
+                        "Side": l["side"].upper(),
+                        "Qty": f"{float(l['qty']):g}",
+                        "Price": price_str,
+                        "Status": l["status"].upper(),
+                        "Type": l["order_type"].upper(),
+                        "TIF": l["time_in_force"].upper(),
+                        "Order ID": str(l["order_id"])[:14] + "..."
+                    })
+                logs_df = pd.DataFrame(log_records)
+                st.dataframe(logs_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption(f"No executed paper trades recorded for '{selected_sbx['name']}' in CockroachDB audit log yet.")
+
+        with col_right:
+            # Component 3: Manual Trade Order Form
+            with st.container(border=True):
+                st.subheader("⚡ Place Paper Order")
+                st.caption(f"Routing order directly into **{selected_sbx['name']}** sub-ledger.")
+
+                with st.form("manual_paper_trade_form", clear_on_submit=False):
+                    order_ticker = st.text_input("Ticker Symbol", value="NVDA", max_chars=10).upper().strip()
+                    order_qty = st.number_input("Share Quantity", min_value=0.1, max_value=100000.0, value=10.0, step=1.0)
+                    order_side = st.radio("Order Side", options=["BUY", "SELL"], horizontal=True)
+                    st.text_input("Target Sandbox", value=selected_sbx["name"], disabled=True)
+                    st.text_input("Order Type", value="Market Order (GTC)", disabled=True)
+
+                    submitted = st.form_submit_button("🚀 Execute Trade", use_container_width=True, type="primary")
+                    if submitted:
+                        if not order_ticker:
+                            st.error("Please enter a valid ticker symbol.")
+                        elif order_qty <= 0:
+                            st.error("Quantity must be positive.")
+                        else:
+                            try:
+                                trade_res = alpaca_service.submit_paper_order(
+                                    symbol=order_ticker,
+                                    qty=order_qty,
+                                    side=order_side.lower(),
+                                    sandbox_id=selected_id,
+                                    order_type="market",
+                                    time_in_force="gtc"
+                                )
+                                st.toast(f"✅ Executed {order_side} {order_qty:g} {order_ticker} in {selected_sbx['name']}!")
+                                st.success(f"Order `{trade_res['order_id']}` submitted ({trade_res['status'].upper()})")
+                                time.sleep(0.5)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to execute paper order: {e}")
+
+    with sub_tab_leaderboard:
+        st.subheader("🏆 Multi-Strategy Sandbox Leaderboard")
+        st.markdown("Side-by-side performance ranking across all active strategy sandboxes.")
+
+        leaderboard = database.get_all_sandboxes_leaderboard()
+        if leaderboard:
+            l_records = []
+            for item in leaderboard:
+                l_records.append({
+                    "Rank": item["rank"],
+                    "Sandbox Name": item["name"],
+                    "Strategy": (item.get("strategy_type") or "General").upper(),
+                    "Initial Capital": f"${item['initial_capital']:,.2f}",
+                    "Current Equity": f"${item['equity']:,.2f}",
+                    "Total P&L ($)": f"${item['total_pl']:+,.2f}",
+                    "Total Return (%)": f"{item['total_return_pct']:+.2f}%",
+                    "Open Positions": item["positions_count"]
+                })
+            ldf = pd.DataFrame(l_records)
+            st.dataframe(ldf, use_container_width=True, hide_index=True)
+
+            st.markdown("#### 📊 Comparative Returns (% Return by Strategy Sandbox)")
+            chart_df = pd.DataFrame({
+                "Strategy Sandbox": [item["name"] for item in leaderboard],
+                "Total Return (%)": [item["total_return_pct"] for item in leaderboard]
+            }).set_index("Strategy Sandbox")
+            st.bar_chart(chart_df, color="#38bdf8")
+        else:
+            st.info("No sandboxes available to benchmark.")
+
+
+
+# ==========================================
 # PAGE ROUTING (NATIVE TABS)
 # ==========================================
 
-tab_portfolio, tab_chat, tab_news, tab_diagnostics = st.tabs([
+tab_portfolio, tab_chat, tab_news, tab_paper_trading, tab_diagnostics = st.tabs([
     "💼 Portfolio",
     "💬 Research Chat",
     "📰 Market News",
+    "🧪 Paper Trading Sandbox",
     "🛠️ Diagnostics"
 ])
 
@@ -1098,7 +1677,11 @@ with tab_chat:
 with tab_news:
     render_news_page()
 
+with tab_paper_trading:
+    render_paper_trading_page()
+
 with tab_diagnostics:
     render_developer_page()
+
 
 

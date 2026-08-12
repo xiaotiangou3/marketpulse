@@ -18,7 +18,13 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # Tavily API Config (Optional fallback)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
+# Alpaca Paper Trading Config
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+ALPACA_PAPER = os.getenv("ALPACA_PAPER", "True").lower() in ("true", "1", "yes")
+
 # Default AI Model Settings
+
 EMBEDDING_MODEL = "gemini-embedding-001"
 GENERATIVE_MODEL = "gemini-3.1-flash-lite"
 
