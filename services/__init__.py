@@ -17,9 +17,10 @@ from .database import (
 from .vector_store import get_embedding_provider, run_chatbot_session, run_remaining_actions
 from .news_service import get_news_provider, fetch_and_store_news, get_stored_news, generate_suggestions_for_news
 from .storage_service import ingest_pdf_transcript
+from .ticker_service import (
+    canonicalize_ticker, display_ticker, fetch_realtime_price, KNOWN_CRYPTO_SYMBOLS
+)
 from .alpaca_service import (
     is_alpaca_configured, get_trading_client, get_account_summary,
     get_open_positions, submit_paper_order, close_position, close_sandbox_position
 )
-
-

@@ -87,7 +87,6 @@ except Exception as e:
 st.markdown("""
 <div class="marketpulse-header">
     <div class="marketpulse-title">MarketPulse AI</div>
-    <div class="marketpulse-badge">Unified Portfolio RAG Sentinel</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -131,7 +130,7 @@ def render_portfolio_page():
     with col1:
         st.subheader("➕ Add Asset Position")
         with st.form("add_asset_form", clear_on_submit=True):
-            ticker_input = st.text_input("Stock Ticker", placeholder="e.g. MSFT, AAPL, NVDA").upper().strip()
+            ticker_input = st.text_input("Asset Ticker", placeholder="e.g. MSFT, AAPL, BTC, ADA, XRP").upper().strip()
             shares_input = st.number_input("Shares", min_value=0.0001, step=1.0, format="%.4f")
             cost_input = st.number_input("Average Cost Basis ($)", min_value=0.01, step=10.0, format="%.2f")
             submit_asset = st.form_submit_button("Save Asset Position")
@@ -143,17 +142,20 @@ def render_portfolio_page():
                     st.error("Shares and cost basis must be positive values.")
                 else:
                     try:
-                        services.add_stock_holding(ticker_input, shares_input, cost_input)
-                        # Immediately log a pricing snapshot on manual update
-                        import yfinance as yf
+                        canonical_ticker = services.canonicalize_ticker(ticker_input)
+                        services.add_stock_holding(canonical_ticker, shares_input, cost_input)
+                        # Immediately log a pricing snapshot on manual update using multi-tier real-time price fetcher
                         try:
-                            t_obj = yf.Ticker(ticker_input)
-                            last_p = float(t_obj.fast_info.get("lastPrice") or t_obj.info.get("regularMarketPrice") or cost_input)
-                            daily_ch = float(t_obj.info.get("regularMarketChangePercent") or 0.0)
-                            database.save_stock_price(ticker_input, last_p, daily_ch)
+                            last_p, daily_ch, _ = services.fetch_realtime_price(canonical_ticker, fallback_price=cost_input)
+                            database.save_stock_price(canonical_ticker, last_p, daily_ch)
                         except Exception:
-                            database.save_stock_price(ticker_input, cost_input, 0.0)
-                        st.success(f"Saved {ticker_input} position to CockroachDB.")
+                            database.save_stock_price(canonical_ticker, cost_input, 0.0)
+                        
+                        disp_name = services.display_ticker(canonical_ticker)
+                        if disp_name != canonical_ticker:
+                            st.success(f"Saved {disp_name} position (as {canonical_ticker}) to CockroachDB.")
+                        else:
+                            st.success(f"Saved {canonical_ticker} position to CockroachDB.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error adding asset: {e}")
@@ -172,11 +174,12 @@ def render_portfolio_page():
             
             for h in metrics["holdings_details"]:
                 row_cols = st.columns([2, 2, 2, 2, 2, 2])
-                row_cols[0].markdown(f"**{h['ticker']}**")
-                row_cols[1].write(f"{h['shares']:.2f}")
-                row_cols[2].write(f"${h['cost_basis']:.2f}")
-                row_cols[3].write(f"${h['current_price']:.2f}")
-                row_cols[4].write(f"${h['position_value']:.2f}")
+                disp = services.display_ticker(h['ticker'])
+                row_cols[0].markdown(f"**{disp}**")
+                row_cols[1].write(f"{h['shares']:.4f}" if h['shares'] < 1 else f"{h['shares']:.2f}")
+                row_cols[2].write(f"${h['cost_basis']:,.2f}")
+                row_cols[3].write(f"${h['current_price']:,.2f}")
+                row_cols[4].write(f"${h['position_value']:,.2f}")
                 
                 if row_cols[5].button("Delete", key=f"del_{h['ticker']}"):
                     try:
@@ -184,7 +187,7 @@ def render_portfolio_page():
                         h_id = next((x["holding_id"] for x in all_holdings if x["ticker"] == h["ticker"]), None)
                         if h_id:
                             services.remove_stock_holding(h_id)
-                            st.toast(f"Removed {h['ticker']} position.")
+                            st.toast(f"Removed {disp} position.")
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error removing position: {e}")
@@ -195,14 +198,15 @@ def render_portfolio_page():
             st.markdown("---")
             st.markdown("##### 📊 Asset Allocation: Cost Basis vs. Current Market Value")
             df = pd.DataFrame(metrics["holdings_details"])
-
+            df["display_ticker"] = df["ticker"].apply(services.display_ticker)
             df["position_cost"] = df["position_cost"].astype(float)
             df["position_value"] = df["position_value"].astype(float)
 
-            chart_df = df[["ticker", "position_cost", "position_value"]].rename(columns={
+            chart_df = df[["display_ticker", "position_cost", "position_value"]].rename(columns={
+                "display_ticker": "Ticker",
                 "position_cost": "Cost Basis Value ($)",
                 "position_value": "Current Market Value ($)"
-            }).set_index("ticker")
+            }).set_index("Ticker")
             st.bar_chart(chart_df)
             
             # Historical Valuation Line Chart
@@ -1106,10 +1110,11 @@ def render_news_page():
             index=0
         )
         
-        custom_ticker = st.text_input(
+        custom_ticker_raw = st.text_input(
             "Or search specific custom ticker:",
-            placeholder="e.g. NVDA, TSLA, AMZN"
+            placeholder="e.g. NVDA, TSLA, BTC, ADA, XRP"
         ).upper().strip()
+        custom_ticker = services.canonicalize_ticker(custom_ticker_raw) if custom_ticker_raw else ""
         
         target_ticker = custom_ticker if custom_ticker else (None if selected_ticker == "All Tickers" else selected_ticker)
         
@@ -1400,15 +1405,15 @@ def render_paper_trading_page():
 
     col_t, col_b1, col_b2 = st.columns([2.4, 1.2, 1.2])
     with col_t:
-        st.header("🧪 Multi-Strategy Paper Trading Sandbox")
-        st.markdown("Run, monitor, and benchmark up to **10 independent strategy sandboxes** with virtual sub-ledgers and Alpaca paper execution.")
+        st.header("🧪 Paper Trading Sandbox")
+        st.markdown("Run, monitor, and benchmark up to **10 independent strategy sandboxes** with virtual sub-ledgers.")
     with col_b1:
         st.write("")
         if st.button("➕ Create New Sandbox", use_container_width=True, type="primary"):
             show_create_sandbox_dialog(num_sandboxes)
     with col_b2:
         st.write("")
-        if st.button("🔄 Refresh Sandbox Data", use_container_width=True):
+        if st.button("🔄", use_container_width=True):
             st.toast("Refreshed Paper Trading metrics.")
             st.rerun()
 
@@ -1439,10 +1444,6 @@ def render_paper_trading_page():
             """,
             unsafe_allow_html=True
         )
-        col_emp1, col_emp2, col_emp3 = st.columns([1, 2, 1])
-        with col_emp2:
-            if st.button("➕ Create Your First Strategy Sandbox", type="primary", use_container_width=True):
-                show_create_sandbox_dialog(num_sandboxes)
         return
 
     # 2. Multi-Sandbox View Setup

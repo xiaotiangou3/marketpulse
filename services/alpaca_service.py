@@ -155,9 +155,10 @@ def submit_paper_order(
             est_price = float(latest[clean_symbol]["price"])
         if est_price is None or est_price <= 0:
             try:
-                h = yf.Ticker(clean_symbol).history(period="1d")
-                if not h.empty:
-                    est_price = float(h["Close"].iloc[-1])
+                from .ticker_service import fetch_realtime_price
+                p, _, _ = fetch_realtime_price(clean_symbol)
+                if p > 0:
+                    est_price = p
             except Exception:
                 est_price = 100.0
         if est_price is None or est_price <= 0:

@@ -21,7 +21,8 @@ def fetch_and_store_news(ticker: str) -> int:
     Fetches latest news for a ticker from the news provider and stores it.
     Returns the number of news articles newly saved in CockroachDB.
     """
-    ticker = ticker.upper().strip()
+    from .ticker_service import canonicalize_ticker
+    ticker = canonicalize_ticker(ticker)
     if not ticker:
         return 0
     
@@ -52,7 +53,8 @@ def get_stored_news(ticker: str = None, limit: int = 30) -> list[dict]:
     Retrieves stored news articles from the database.
     """
     if ticker:
-        ticker = ticker.upper().strip()
+        from .ticker_service import canonicalize_ticker
+        ticker = canonicalize_ticker(ticker)
     return database.get_market_news(ticker=ticker, limit=limit)
 
 def generate_suggestions_for_news(news_id: str) -> str:

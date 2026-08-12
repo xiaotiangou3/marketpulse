@@ -100,6 +100,8 @@ def run_migrations():
 
 @db_retry
 def add_holding(ticker: str, shares: float, cost_basis: float):
+    from .ticker_service import canonicalize_ticker
+    canonical_symbol = canonicalize_ticker(ticker)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -109,7 +111,7 @@ def add_holding(ticker: str, shares: float, cost_basis: float):
                 VALUES (%s, %s, %s)
                 RETURNING holding_id;
                 """,
-                (ticker.upper().strip(), shares, cost_basis)
+                (canonical_symbol, shares, cost_basis)
             )
             holding_id = cur.fetchone()[0]
             conn.commit()
@@ -607,35 +609,18 @@ def price_polling_loop():
         try:
             holdings = get_holdings()
             if holdings:
+                from .ticker_service import fetch_realtime_price
                 tickers = list(set(h["ticker"] for h in holdings))
                 print(f"Polling prices for tickers: {tickers}")
                 
                 latest_prices = {}
                 for t in tickers:
                     try:
-                        ticker_obj = yf.Ticker(t)
-                        info = ticker_obj.fast_info
-                        price = float(info.get("lastPrice") or info.get("last_price") or 0.0)
-                        
-                        # Fallback to info dict
-                        if price == 0.0:
-                            price = float(ticker_obj.info.get("regularMarketPrice") or 0.0)
-                            daily_change = float(ticker_obj.info.get("regularMarketChangePercent") or 0.0)
-                        else:
-                            daily_change = float(ticker_obj.info.get("regularMarketChangePercent") or 0.0)
-                            
-                        # Fallback to history close
-                        if price == 0.0:
-                            hist = ticker_obj.history(period="1d")
-                            if not hist.empty:
-                                price = float(hist["Close"].iloc[-1])
-                                if "Open" in hist.columns and hist["Open"].iloc[-1] > 0:
-                                    daily_change = ((price - hist["Open"].iloc[-1]) / hist["Open"].iloc[-1]) * 100
-                        
+                        price, daily_change, canonical_t = fetch_realtime_price(t)
                         if price > 0.0:
-                            save_stock_price(t, price, daily_change)
-                            latest_prices[t] = {"price": price, "daily_change_pct": daily_change}
-                            print(f"  Saved price for {t}: ${price:.2f} ({daily_change:+.2f}%)")
+                            save_stock_price(canonical_t, price, daily_change)
+                            latest_prices[canonical_t] = {"price": price, "daily_change_pct": daily_change}
+                            print(f"  Saved price for {canonical_t}: ${price:.2f} ({daily_change:+.2f}%)")
                     except Exception as ex:
                         print(f"  Error polling price for {t}: {ex}")
                 
@@ -1322,10 +1307,9 @@ def calculate_sandbox_metrics(sandbox_id: str, user_id: str = "demo_user") -> di
             cur_price = float(latest_prices[sym]["price"])
         if cur_price is None or cur_price <= 0:
             try:
-                t = yf.Ticker(sym)
-                h = t.history(period="1d")
-                if not h.empty:
-                    cur_price = float(h["Close"].iloc[-1])
+                from .ticker_service import fetch_realtime_price
+                p, _, _ = fetch_realtime_price(sym, fallback_price=avg_entry)
+                cur_price = p if p > 0 else avg_entry
             except Exception:
                 cur_price = avg_entry
         if cur_price is None or cur_price <= 0:
