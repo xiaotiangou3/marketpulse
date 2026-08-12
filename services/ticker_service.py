@@ -127,3 +127,150 @@ def _fetch_yf_price(ticker_str: str) -> Tuple[float, float]:
         return price, daily_change
     except Exception:
         return 0.0, 0.0
+
+def fetch_portfolio_history(holdings: list[dict], timeframe: str = "1D") -> dict:
+    """
+    Calculates aggregated historical portfolio valuation across a given timeframe.
+    - 1D: Lookback 1 day from current date
+    - 1W: Lookback 7 days from current date
+    - 1M: Lookback 30 days from current date
+    - 1Y: Lookback 365 days from current date
+    - ALL: Starts from the earliest ticker added by the user to current date
+
+    Returns:
+        {
+            'df': pd.DataFrame with index 'Timestamp' and column 'Portfolio Value ($)',
+            'start_value': float,
+            'current_value': float,
+            'change_value': float,
+            'change_pct': float
+        }
+    """
+    import pandas as pd
+    import datetime
+    
+    empty_result = {
+        'df': pd.DataFrame(columns=["Portfolio Value ($)"]),
+        'start_value': 0.0,
+        'current_value': 0.0,
+        'change_value': 0.0,
+        'change_pct': 0.0
+    }
+    
+    if not holdings:
+        return empty_result
+        
+    # Determine the earliest creation date among active holdings
+    earliest_dt = None
+    for h in holdings:
+        c_at = h.get("created_at")
+        if c_at:
+            if isinstance(c_at, str):
+                try:
+                    c_at = pd.to_datetime(c_at)
+                except Exception:
+                    pass
+            if hasattr(c_at, "tzinfo") and c_at.tzinfo is not None:
+                c_at = c_at.replace(tzinfo=None)
+            if earliest_dt is None or c_at < earliest_dt:
+                earliest_dt = c_at
+
+    tf_upper = timeframe.upper()
+    now_dt = datetime.datetime.now()
+    
+    standard_lookbacks = {
+        "1D": 1.0,
+        "1W": 7.0,
+        "1M": 30.0,
+        "1Y": 365.0,
+        "ALL": None
+    }
+    lookback_days = standard_lookbacks.get(tf_upper, 1.0)
+    
+    if earliest_dt:
+        days_since_earliest = max((now_dt - earliest_dt).total_seconds() / 86400.0, 0.01)
+        if lookback_days is None:
+            effective_days = days_since_earliest
+            effective_start = earliest_dt
+        else:
+            effective_days = min(lookback_days, days_since_earliest)
+            effective_start = max(now_dt - datetime.timedelta(days=lookback_days), earliest_dt)
+    else:
+        effective_days = lookback_days if lookback_days is not None else 365.0 * 5
+        effective_start = now_dt - datetime.timedelta(days=effective_days)
+        
+    if effective_days <= 1.5:
+        period, interval = "1d", "5m"
+    elif effective_days <= 7.5:
+        period, interval = "5d", "15m"
+    elif effective_days <= 35.0:
+        period, interval = "1mo", "1h"
+    elif effective_days <= 370.0:
+        period, interval = "1y", "1d"
+    else:
+        period, interval = "max", "1d"
+    
+    series_dict = {}
+    
+    for h in holdings:
+        raw_ticker = h.get("ticker", "")
+        canonical = canonicalize_ticker(raw_ticker)
+        shares = float(h.get("shares", 0.0))
+        if shares <= 0:
+            continue
+            
+        try:
+            t_obj = yf.Ticker(canonical)
+            hist = t_obj.history(period=period, interval=interval)
+            
+            # For 1D fallback if empty (e.g. pre-market or weekend)
+            if hist.empty and period == "1d":
+                hist = t_obj.history(period="5d", interval="15m")
+                if not hist.empty:
+                    last_date = hist.index[-1].date()
+                    hist = hist[hist.index.date == last_date]
+            
+            if not hist.empty and "Close" in hist.columns:
+                close_series = hist["Close"].dropna()
+                # Normalize timezone to tz-naive for clean alignment
+                if close_series.index.tz is not None:
+                    close_series.index = close_series.index.tz_convert(None)
+                series_dict[canonical] = close_series * shares
+        except Exception:
+            pass
+            
+    if not series_dict:
+        return empty_result
+        
+    # Combine all series into a single DataFrame and sum
+    df_combined = pd.DataFrame(series_dict)
+    df_combined = df_combined.ffill().bfill()
+    portfolio_total = df_combined.sum(axis=1)
+    
+    # Slice series starting from effective_start (capped by earliest added ticker)
+    if effective_start is not None:
+        sliced = portfolio_total[portfolio_total.index >= effective_start]
+        if not sliced.empty and len(sliced) >= 2:
+            portfolio_total = sliced
+    
+    if portfolio_total.empty:
+        return empty_result
+        
+    start_val = float(portfolio_total.iloc[0])
+    current_val = float(portfolio_total.iloc[-1])
+    change_val = current_val - start_val
+    change_pct = (change_val / start_val * 100.0) if start_val > 0 else 0.0
+    
+    result_df = pd.DataFrame({
+        "Portfolio Value ($)": portfolio_total
+    })
+    result_df.index.name = "Timestamp"
+    
+    return {
+        'df': result_df,
+        'start_value': start_val,
+        'current_value': current_val,
+        'change_value': change_val,
+        'change_pct': change_pct
+    }
+

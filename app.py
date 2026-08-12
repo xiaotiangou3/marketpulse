@@ -8,6 +8,7 @@ import services.database as database
 import services.alpaca_service as alpaca_service
 import services
 import config
+from typing import Optional
 
 
 # Set up page configurations
@@ -91,6 +92,32 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# FORMATTING HELPERS
+# ==========================================
+
+def format_currency(val: float, show_sign: bool = False) -> str:
+    """Formats a float as currency. Handles negative signs correctly: -$1.00 instead of $-1.00."""
+    try:
+        val = float(val)
+    except (ValueError, TypeError):
+        return "$0.00"
+    if val < 0:
+        return f"-${abs(val):,.2f}"
+    elif show_sign and val > 0:
+        return f"+${val:,.2f}"
+    return f"${val:,.2f}"
+
+def format_delta(val: float, pct: Optional[float] = None) -> str:
+    """Formats a delta with sign before dollar: -$1.00 (-0.50%) or +$1.00 (+0.50%)."""
+    try:
+        val = float(val)
+    except (ValueError, TypeError):
+        val = 0.0
+    sign = "-" if val < 0 else ("+" if val > 0 else "")
+    pct_part = f" ({pct:+.2f}%)" if pct is not None else ""
+    return f"{sign}${abs(val):,.2f}{pct_part}"
+
+# ==========================================
 # PAGE RENDERERS
 # ==========================================
 
@@ -103,26 +130,92 @@ def render_portfolio_page():
     
     # Calculate portfolio performance metrics
     metrics = services.calculate_performance_metrics()
+    holdings = metrics.get("holdings_details", [])
     
+    if "portfolio_timeframe" not in st.session_state:
+        st.session_state["portfolio_timeframe"] = "1D"
+        
     st.markdown("---")
     
-    # 1. Metric Cards Summary Header
-    metric_col1, metric_col2, metric_col3 = st.columns(3)
-    metric_col1.metric(
-        label="Total Portfolio Value",
-        value=f"${metrics['total_value']:,.2f}"
-    )
-    metric_col2.metric(
-        label="Daily Portfolio Change",
-        value=f"${metrics['daily_change']:+,.2f}",
-        delta=f"{metrics['daily_change_pct']:+.2f}%"
-    )
-    metric_col3.metric(
-        label="Total Gain / Loss",
-        value=f"${metrics['total_gain_loss']:+,.2f}",
-        delta=f"{metrics['total_gain_loss_pct']:+.2f}%"
-    )
-    
+    # 1. Full-width Hero Card Section
+    with st.container(border=True):
+        hero_left, hero_right = st.columns([3, 2])
+        
+        with hero_right:
+            selected_tf = st.radio(
+                "Timeframe",
+                options=["1D", "1W", "1M", "1Y", "ALL"],
+                index=["1D", "1W", "1M", "1Y", "ALL"].index(st.session_state.get("portfolio_timeframe", "1D")),
+                horizontal=True,
+                key="portfolio_timeframe_radio"
+            )
+            st.session_state["portfolio_timeframe"] = selected_tf
+            
+        # Fetch dynamic timeframe history for holdings
+        history_result = services.fetch_portfolio_history(holdings, timeframe=selected_tf)
+        hist_df = history_result.get("df", pd.DataFrame())
+        
+        # Calculate adaptive timeframe change
+        if selected_tf == "1D" and metrics["total_value"] > 0:
+            tf_change_val = metrics["daily_change"]
+            tf_change_pct = metrics["daily_change_pct"]
+        elif not hist_df.empty and history_result.get("start_value", 0.0) > 0:
+            tf_change_val = history_result["change_value"]
+            tf_change_pct = history_result["change_pct"]
+        else:
+            tf_change_val = metrics.get("daily_change", 0.0)
+            tf_change_pct = metrics.get("daily_change_pct", 0.0)
+            
+        with hero_left:
+            st.caption("Total Portfolio Value")
+            st.markdown(f"<h1 style='margin: 0; padding: 0; font-size: 2.3rem; font-weight: 800;'>{format_currency(metrics['total_value'])}</h1>", unsafe_allow_html=True)
+            
+            delta_color = "#ef4444" if tf_change_val < 0 else ("#10b981" if tf_change_val > 0 else "#94a3b8")
+            st.markdown(
+                f"<div style='font-size: 1.1rem; font-weight: 600; color: {delta_color}; margin-top: 4px;'>"
+                f"{format_delta(tf_change_val, tf_change_pct)} "
+                f"<span style='font-size: 0.85rem; color: #94a3b8; font-weight: 400;'>({selected_tf})</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+        
+        # Secondary Summary Metrics
+        # sub_m1, sub_m2, sub_m3 = st.columns(3)
+        # sub_m1.metric("Total Cost Basis", format_currency(metrics["total_cost"]))
+        # sub_m2.metric(
+        #     "Total Unrealized P&L",
+        #     format_currency(metrics["total_gain_loss"], show_sign=True),
+        #     delta=f"{metrics['total_gain_loss_pct']:+.2f}%"
+        # )
+        # sub_m3.metric("Tracked Positions", f"{len(holdings)} Assets")
+        
+        st.markdown("---")
+        
+        # Historical Portfolio Performance Chart (Directly below portfolio value in Hero Card)
+        st.markdown(f"##### 📈 Historical Portfolio Performance ({selected_tf})")
+        if not hist_df.empty and len(hist_df) > 1:
+            st.line_chart(hist_df, color="#38bdf8", use_container_width=True)
+        elif holdings:
+            # Fallback to database snapshots if real-time series is building
+            try:
+                snapshots = database.get_portfolio_snapshots(limit=100)
+                if snapshots:
+                    snap_df = pd.DataFrame(snapshots)
+                    snap_df["total_value"] = snap_df["total_value"].astype(float)
+                    snap_df = snap_df[["recorded_at", "total_value"]].rename(columns={
+                        "recorded_at": "Timestamp",
+                        "total_value": "Portfolio Value ($)"
+                    }).set_index("Timestamp")
+                    st.line_chart(snap_df, color="#38bdf8", use_container_width=True)
+                else:
+                    st.info(f"Loading {selected_tf} performance chart data...")
+            except Exception as e:
+                st.caption(f"Historical valuation trends unavailable: {e}")
+        else:
+            st.info("Your portfolio is currently empty. Add positions below to track historical performance.")
+            
     st.markdown("---")
     
     col1, col2 = st.columns([1, 2])
@@ -130,10 +223,10 @@ def render_portfolio_page():
     with col1:
         st.subheader("➕ Add Asset Position")
         with st.form("add_asset_form", clear_on_submit=True):
-            ticker_input = st.text_input("Asset Ticker", placeholder="e.g. MSFT, AAPL, BTC, ADA, XRP").upper().strip()
+            ticker_input = st.text_input("Asset Ticker", placeholder="e.g. MSFT, AAPL, BTC").upper().strip()
             shares_input = st.number_input("Shares", min_value=0.0001, step=1.0, format="%.4f")
             cost_input = st.number_input("Average Cost Basis ($)", min_value=0.01, step=10.0, format="%.2f")
-            submit_asset = st.form_submit_button("Save Asset Position")
+            submit_asset = st.form_submit_button("Save Asset Position", use_container_width=True, type="primary")
             
             if submit_asset:
                 if not ticker_input:
@@ -164,7 +257,7 @@ def render_portfolio_page():
         st.subheader("📊 Active Portfolio Holdings")
         if metrics["holdings_details"]:
             total_cost = metrics["total_cost"]
-            header_cols = st.columns([2, 2, 2, 2, 2, 2])
+            header_cols = st.columns([1.5, 1.2, 1.5, 1.5, 1.5, 1.2])
             header_cols[0].markdown("**Ticker**")
             header_cols[1].markdown("**Shares**")
             header_cols[2].markdown("**Cost Basis**")
@@ -173,13 +266,13 @@ def render_portfolio_page():
             header_cols[5].markdown("**Action**")
             
             for h in metrics["holdings_details"]:
-                row_cols = st.columns([2, 2, 2, 2, 2, 2])
+                row_cols = st.columns([1.5, 1.2, 1.5, 1.5, 1.5, 1.2])
                 disp = services.display_ticker(h['ticker'])
                 row_cols[0].markdown(f"**{disp}**")
                 row_cols[1].write(f"{h['shares']:.4f}" if h['shares'] < 1 else f"{h['shares']:.2f}")
-                row_cols[2].write(f"${h['cost_basis']:,.2f}")
-                row_cols[3].write(f"${h['current_price']:,.2f}")
-                row_cols[4].write(f"${h['position_value']:,.2f}")
+                row_cols[2].write(format_currency(h['cost_basis']))
+                row_cols[3].write(format_currency(h['current_price']))
+                row_cols[4].write(format_currency(h['position_value']))
                 
                 if row_cols[5].button("Delete", key=f"del_{h['ticker']}"):
                     try:
@@ -192,7 +285,7 @@ def render_portfolio_page():
                     except Exception as e:
                         st.error(f"Error removing position: {e}")
                         
-            st.markdown(f"### **Total Cost Basis Value: ${total_cost:,.2f}**")
+            st.markdown(f"**Total Cost Basis Value: {format_currency(total_cost)}**")
             
             # Allocation Comparison Bar Chart
             st.markdown("---")
@@ -208,26 +301,6 @@ def render_portfolio_page():
                 "position_value": "Current Market Value ($)"
             }).set_index("Ticker")
             st.bar_chart(chart_df)
-            
-            # Historical Valuation Line Chart
-            st.markdown("---")
-            st.markdown("##### 📈 Historical Portfolio Valuation (30-Minute Snapshot Log)")
-            try:
-                snapshots = database.get_portfolio_snapshots(limit=100)
-                if snapshots:
-                    snap_df = pd.DataFrame(snapshots)
-
-                    snap_df["total_value"] = snap_df["total_value"].astype(float)
-
-                    snap_df = snap_df[["recorded_at", "total_value"]].rename(columns={
-                        "recorded_at": "Timestamp",
-                        "total_value": "Portfolio Value ($)"
-                    }).set_index("Timestamp")
-                    st.line_chart(snap_df)
-                else:
-                    st.info("Valuation snapshot history is building. Snapshot entries log automatically every 30 minutes.")
-            except Exception as e:
-                st.write(f"Could not load historical valuation trends: {e}")
         else:
             st.info("Your portfolio is currently empty. Add positions to get started.")
 
@@ -1413,7 +1486,7 @@ def render_paper_trading_page():
             show_create_sandbox_dialog(num_sandboxes)
     with col_b2:
         st.write("")
-        if st.button("🔄", use_container_width=True):
+        if st.button("🔄 Refresh Sandbox Data", use_container_width=True):
             st.toast("Refreshed Paper Trading metrics.")
             st.rerun()
 
@@ -1436,7 +1509,7 @@ def render_paper_trading_page():
         st.markdown(
             """
             <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed #38bdf8; border-radius: 12px; padding: 40px; text-align: center; margin: 20px 0;">
-                <h3 style="color: #38bdf8; margin-top: 0;">🧪 No Active Strategy Sandboxes</h3>
+                <h3 style="color: #38bdf8; margin-top: 0;">No Active Strategy Sandboxes</h3>
                 <p style="color: #94a3b8; font-size: 1rem; max-width: 600px; margin: 0 auto 25px auto;">
                     You have no paper trading sandboxes created yet. Create a dedicated sandbox to test, isolate, and benchmark individual trading strategies with virtual capital.
                 </p>
@@ -1502,16 +1575,16 @@ def render_paper_trading_page():
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric(
             label="Virtual Portfolio Equity",
-            value=f"${metrics['equity']:,.2f}",
-            delta=f"${metrics['total_pl']:+,.2f} ({metrics['total_return_pct']:+.2f}%)"
+            value=format_currency(metrics['equity']),
+            delta=format_delta(metrics['total_pl'], metrics['total_return_pct'])
         )
         kpi2.metric(
             label="Available Cash",
-            value=f"${metrics['cash']:,.2f}"
+            value=format_currency(metrics['cash'])
         )
         kpi3.metric(
             label="Positions Value",
-            value=f"${metrics['positions_value']:,.2f}"
+            value=format_currency(metrics['positions_value'])
         )
         kpi4.metric(
             label="Bound Strategy",
@@ -1540,13 +1613,13 @@ def render_paper_trading_page():
                     r_cols[0].write(p["symbol"])
                     r_cols[1].write(p["side"].upper())
                     r_cols[2].write(f"{p['qty']:g}")
-                    r_cols[3].write(f"${p['avg_entry_price']:,.2f}")
-                    r_cols[4].write(f"${p['current_price']:,.2f}")
-                    r_cols[5].write(f"${p['market_value']:,.2f}")
+                    r_cols[3].write(format_currency(p['avg_entry_price']))
+                    r_cols[4].write(format_currency(p['current_price']))
+                    r_cols[5].write(format_currency(p['market_value']))
                     
                     pl_val = p['unrealized_pl']
                     pl_color = "#10b981" if pl_val >= 0 else "#ef4444"
-                    r_cols[6].markdown(f"<span style='color:{pl_color}; font-weight:600;'>${pl_val:+,.2f}</span>", unsafe_allow_html=True)
+                    r_cols[6].markdown(f"<span style='color:{pl_color}; font-weight:600;'>{format_currency(pl_val, show_sign=True)}</span>", unsafe_allow_html=True)
                     
                     ret_val = p['unrealized_plpc']
                     r_cols[7].markdown(f"<span style='color:{pl_color}; font-weight:600;'>{ret_val:+.2f}%</span>", unsafe_allow_html=True)
@@ -1637,9 +1710,9 @@ def render_paper_trading_page():
                     "Rank": item["rank"],
                     "Sandbox Name": item["name"],
                     "Strategy": (item.get("strategy_type") or "General").upper(),
-                    "Initial Capital": f"${item['initial_capital']:,.2f}",
-                    "Current Equity": f"${item['equity']:,.2f}",
-                    "Total P&L ($)": f"${item['total_pl']:+,.2f}",
+                    "Initial Capital": format_currency(item['initial_capital']),
+                    "Current Equity": format_currency(item['equity']),
+                    "Total P&L ($)": format_currency(item['total_pl'], show_sign=True),
                     "Total Return (%)": f"{item['total_return_pct']:+.2f}%",
                     "Open Positions": item["positions_count"]
                 })

@@ -722,7 +722,8 @@ def calculate_performance_metrics():
             'position_value': position_value,
             'gain_loss': gain_loss,
             'gain_loss_pct': gain_loss_pct,
-            'daily_change_pct': daily_change_pct
+            'daily_change_pct': daily_change_pct,
+            'created_at': h.get('created_at')
         })
         
     total_gain_loss = total_value - total_cost
