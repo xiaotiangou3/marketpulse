@@ -433,14 +433,6 @@ def inject_slash_command_palette():
                     desc: "Execute paper order via Alpaca Sandbox API"
                 },
                 {
-                    cmd: "/performance",
-                    template: "/performance",
-                    icon: "📊",
-                    badge: "portfolio",
-                    title: "Performance & Returns",
-                    desc: "Calculate total portfolio valuation, P&L, and allocations"
-                },
-                {
                     cmd: "/help",
                     template: "/help",
                     icon: "💡",
@@ -893,7 +885,7 @@ def render_chatbot_page():
     col_header, col_new = st.columns([3, 1])
     with col_header:
         st.header("💬 AI Research Assistant Chatbot")
-        st.markdown("Interact with MarketPulse AI using natural language or slash commands (e.g. `/debate`, `/stress`, `/performance`, `/help`).")
+        st.markdown("Interact with MarketPulse AI using natural language or slash commands.")
     
     with col_new:
         st.write("") # Spacer to align buttons slightly lower
@@ -906,7 +898,6 @@ def render_chatbot_page():
                     "💡 **Try typing `/` in the chat bar or asking:**\n"
                     "- *'/debate talk about the bull and bear catalysts for NVDA based on news'*\n"
                     "- *'/stress analyze what happens if interest rates rise 50bps'*\n"
-                    "- *'/performance'*\n"
                     "- *'Add a strategy to limit tech to 30%'*\n"
                     "- *'/help' for full commands guide*"
                 )
@@ -1419,11 +1410,13 @@ def render_chatbot_page():
                             with status_box:
                                 st.write(detail)
                     try:
+                        chat_mem = st.session_state.chat_history[-10:] if st.session_state.get("chat_history") else None
                         res = services.run_chatbot_session(
                             user_prompt, 
                             uploaded_files=uploaded_files_list, 
                             file_context=file_context,
-                            status_callback=handle_status
+                            status_callback=handle_status,
+                            chat_history=chat_mem
                         )
                         status_box.update(label="✅ Analysis & execution complete", state="complete", expanded=False)
                         

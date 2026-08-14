@@ -1,6 +1,6 @@
 import json
 import concurrent.futures
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Union
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -25,7 +25,7 @@ def get_gemini_client():
     return _client
 
 @llm_retry
-def generate_ai_response(prompt: str, system_instruction: str = None, tools: list = None) -> str:
+def generate_ai_response(prompt: Union[str, list], system_instruction: str = None, tools: list = None) -> str:
     client = get_gemini_client()
     
     req_config = types.GenerateContentConfig(
@@ -250,7 +250,14 @@ def validate_response(
         return raw_response
 
 @llm_retry
-def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: str = None, holdings_str: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> RouterOutput:
+def route_user_intent(
+    user_prompt: str,
+    has_uploaded_file: bool,
+    file_context: str = None,
+    holdings_str: str = None,
+    status_callback: Optional[Callable[[str, Optional[str]], None]] = None,
+    chat_history: Optional[List[dict]] = None
+) -> RouterOutput:
     if status_callback:
         status_callback("🧠 Parsing prompt & analyzing intent...", "Extracting only the actions explicitly requested by the user...")
     client = get_gemini_client()
@@ -269,7 +276,7 @@ def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: s
         "8. Never default to a backtest just because the user mentions a strategy. Mentioning or discussing a strategy is not the same as asking to test it.\n"
         "9. Never default to paper trading. A positive backtest is not a request to trade.\n"
         "10. When information is missing, leave the field empty rather than inventing a value, except for defaults explicitly defined by the application contract.\n"
-        "11. Do not route to performance_analysis, add_strategy, delete_strategy, or update_strategy. These action types are no longer supported. Handle any requests to check performance or manage strategies conversationally (route to 'none') or refer the user to the UI buttons. You can route to 'list_strategies' when the user explicitly requests to list/view strategy rules, or when the agent needs to refer to the user's strategies.\n\n"
+        "11. Do not route to performance_analysis, add_strategy, delete_strategy, or update_strategy. These action types are no longer supported. Handle any requests to check performance or manage strategies conversationally (route to 'none') or refer the user to the UI buttons. You can route to 'list_strategies' when the user explicitly requests to list/view strategy rules.\n\n"
         "### ACTION DEFINITIONS ###\n"
         "- debate: only an explicit request for bull/bear debate, stock debate, or equivalent structured debate.\n"
         "- stress_test: only an explicit request to test a macro/scenario shock.\n"
@@ -298,16 +305,24 @@ def route_user_intent(user_prompt: str, has_uploaded_file: bool, file_context: s
         "8. answer_scope: A brief description of the scope of the final answer."
     )
 
-    prompt = f"User Prompt:\n{user_prompt}\n"
+    contents = []
+    if chat_history:
+        for msg in chat_history:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+            
+    current_prompt_with_context = f"User Prompt:\n{user_prompt}\n"
     if holdings_str:
-        prompt += f"\n### CURRENT USER HOLDINGS ###\n{holdings_str}\n"
+        current_prompt_with_context += f"\n### CURRENT USER HOLDINGS ###\n{holdings_str}\n"
     if file_context:
-        prompt += f"\n### UPLOADED FILE CONTEXT ###\n{file_context}\n"
+        current_prompt_with_context += f"\n### UPLOADED FILE CONTEXT ###\n{file_context}\n"
+        
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=current_prompt_with_context)]))
 
     try:
         response = client.models.generate_content(
             model=config.GENERATIVE_MODEL,
-            contents=prompt,
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=RouterOutput,
@@ -359,6 +374,7 @@ def generate_conversational_response(
     status_callback: Optional[Callable[[str, Optional[str]], None]] = None,
     allowed_actions: Optional[List[str]] = None,
     contract: Optional[RequestContract] = None,
+    chat_history: Optional[List[dict]] = None,
 ) -> str:
     if status_callback:
         status_callback("💬 Formulating response...", "Following the user's requested scope and grounding claims in the supplied context...")
@@ -394,8 +410,15 @@ def generate_conversational_response(
     if "create_sandbox" in allowed_actions:
         tools.append(create_sandbox_tool)
 
+    contents = []
+    if chat_history:
+        for msg in chat_history:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_prompt)]))
+
     raw_response = generate_ai_response(
-        user_prompt,
+        contents,
         system_instruction,
         tools=tools or None,
     )
@@ -428,6 +451,7 @@ def synthesize_chat_response(
     status_callback: Optional[Callable[[str, Optional[str]], None]] = None,
     allowed_actions: Optional[List[str]] = None,
     contract: Optional[RequestContract] = None,
+    chat_history: Optional[List[dict]] = None,
 ) -> str:
     if status_callback:
         status_callback("📝 Synthesizing response...", "Preserving the requested scope and checking conclusions against the evidence...")
@@ -455,10 +479,19 @@ def synthesize_chat_response(
         "Return a clear, faithful, professional answer. Educational simulation only; not official financial advice."
     )
 
+    contents = []
+    if chat_history:
+        for msg in chat_history:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+    synthesis_prompt = f"User Prompt:\n{user_prompt}\n\n### WORKFLOW EXECUTION RESULTS ###\n{results_summary}"
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=synthesis_prompt)]))
+
+    # Explicitly prevent synthesis layer from invoking tools by setting tools=None
     raw_response = generate_ai_response(
-        f"User Prompt:\n{user_prompt}\n\nTOOL EXECUTION RESULTS SUMMARY:\n{results_summary}",
+        contents,
         system_instruction,
-        tools=None,
+        tools=None
     )
     
     validation_contract = contract or RequestContract(

@@ -22,19 +22,18 @@ HELP_MESSAGE = """### ⚡ MarketPulse AI Slash Commands & Actions
 
 You can trigger specific research sentinel actions using slash commands with optional natural language descriptions:
 
-| Command | Action | Example Description |
-| :--- | :--- | :--- |
-| **`/debate <description>`** | **Bull vs. Bear Debate & News Scan**<br>Synthesizes market news and weighs upside catalysts against downside risks. | • `/debate NVDA`<br>• `/debate talk about the bull and bear market based on the news for MSFT` |
-| **`/backtest <ticker>`** | **Quantitative Strategy Backtest**<br>Simulates technical strategy performance with zero lookahead bias. | • `/backtest NVDA`<br>• `Should I sell NVDA if it drops below its 20-day moving average?` |
-| **`/trade`** | **Automated Paper Trading**<br>Submits paper market orders to Alpaca Sandbox with audit logging. | • `/trade`<br>• `Buy 10 shares of NVDA`<br>• `Sell 5 shares of MSFT` |
-| **`/stress <description>`** | **Macro Risk Stress Test**<br>Simulates portfolio impact under specific economic scenarios. | • `/stress 50bps rate hike`<br>• `/stress evaluate what happens if oil prices surge` |
-| **`/performance`** | **Portfolio Performance & Valuation**<br>Calculates real-time portfolio value, daily P&L, and asset allocation breakdown. | • `/performance`<br>• `/performance summarize my top holdings and returns` |
-| **`/help`** | **Commands Reference**<br>Shows this reference guide. | • `/help` |
+| Command | Action | 
+| :--- | :--- | 
+| **`/debate`** | **Bull vs. Bear Debate & News Scan** |
+| **`/backtest`** | **Quantitative Strategy Backtest** |
+| **`/trade`** | **Automated Paper Trading** |
+| **`/stress`** | **Macro Risk Stress Test** |
+| **`/help`** | **Commands Reference** |
 
 💡 **Multi-Intent Support:** You can combine slash commands with other requests in a single prompt (e.g., `"/debate AAPL and also run a backtest on RSI"`).
 """
 
-def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
+def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_context: str = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None, chat_history: list = None) -> dict:
     """
     Structured chatbot assistant workflow:
     1. Parses user's request into structured action items.
@@ -87,7 +86,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     custom_holdings = database.extract_holdings_from_context(file_context)
     
     print(f"Routing chatbot user prompt: '{user_prompt[:50]}...'")
-    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str, status_callback=status_callback)
+    router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str, status_callback=status_callback, chat_history=chat_history)
     
     # Veto incorrect backtest routing on qualitative document/file queries
     has_tech_keywords = any(
@@ -394,7 +393,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
             file_context,
             status_callback=status_callback,
             allowed_actions=[a.action_type for a in router_output.actions],
-            contract=router_output.contract
+            contract=router_output.contract,
+            chat_history=chat_history
         )
         actions_run.append({"type": "conversational"})
     else:
@@ -406,7 +406,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
             file_context,
             status_callback=status_callback,
             allowed_actions=[a.action_type for a in router_output.actions],
-            contract=router_output.contract
+            contract=router_output.contract,
+            chat_history=chat_history
         )
         
     elapsed = time.time() - start_time
