@@ -215,18 +215,18 @@ def ingest_portfolio_csv(file_name: str, file_data: bytes, user_prompt: str = ""
         "overwrite_intent": overwrite_intent
     }
 
-def extract_strategies_from_ips(file_name: str, doc_text: str):
+def extract_strategies_from_ips(file_name: str, doc_text: str) -> list[str]:
     """
-    Invokes Gemini to analyze the IPS text, extract qualitative strategy rules,
-    generates embeddings for them, and inserts them into user_strategies.
+    Leverages Gemini to read the provided Investment Policy Statement (IPS) text and
+    extract distinct, concrete qualitative investment strategy rules or guidelines.
+    Returns them as a list of strings for review.
     """
     from agent.orchestrator import generate_ai_response
-    from services.vector_store import get_embedding_provider
     
     print(f"Extracting strategy rules from IPS PDF '{file_name}'...")
     
     system_instruction = (
-        "You are a professional Investment Operations Assistant. Your task is to analyze "
+        "You are an expert financial compliance analyst. Your job is to analyze "
         "the provided Investment Policy Statement (IPS) text and extract distinct, concrete "
         "qualitative investment strategy rules or guidelines.\n\n"
         "Rules should look like:\n"
@@ -249,15 +249,10 @@ def extract_strategies_from_ips(file_name: str, doc_text: str):
         
         rules = json.loads(response_text)
         if isinstance(rules, list):
-            embed_provider = get_embedding_provider()
-            for rule in rules:
-                rule_text = rule.strip()
-                if rule_text:
-                    print(f"  [+] Extracted qualitative strategy: '{rule_text}'")
-                    embedding = embed_provider.get_embedding(rule_text)
-                    database.save_strategy(rule_text, embedding)
+            return [r.strip() for r in rules if r.strip()]
     except Exception as e:
         print(f"Failed to extract strategies from IPS: {e}")
+    return []
 
 def _run_ingestion_job_thread(job_id: str, file_name: str, file_data: bytes, user_prompt: str, ticker: str = None):
     """Internal target for background worker thread."""
@@ -363,11 +358,19 @@ def _run_ingestion_job_thread(job_id: str, file_name: str, file_data: bytes, use
             
             # Strategy IPS check
             is_ips = "ips" in file_name.lower() or "investment policy" in file_name.lower()
+            job_metadata = {}
             if is_ips:
                 full_text = "\n".join([c["chunk_text"] for c in chunks])
-                extract_strategies_from_ips(file_name, full_text)
+                rules = extract_strategies_from_ips(file_name, full_text)
+                if rules:
+                    job_metadata["rules"] = rules
                 
-            database.update_ingestion_job_status(job_id, 'completed', 100)
+            database.update_ingestion_job_status(
+                job_id, 
+                'completed', 
+                100,
+                error_message=json.dumps(job_metadata) if job_metadata else None
+            )
             
     except Exception as e:
         print(f"Error in background ingestion worker: {e}")

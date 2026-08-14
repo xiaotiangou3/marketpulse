@@ -91,6 +91,8 @@ if "pending_portfolio_overwrite" not in st.session_state:
     st.session_state.pending_portfolio_overwrite = None
 if "active_session_file_holdings" not in st.session_state:
     st.session_state.active_session_file_holdings = None
+if "pending_ips_strategies" not in st.session_state:
+    st.session_state.pending_ips_strategies = None
 if "pending_toasts" not in st.session_state:
     st.session_state.pending_toasts = []
 
@@ -859,6 +861,17 @@ def poll_ingestion_jobs_status():
                             st.session_state.active_session_file_holdings = metadata["holdings"]
                     except Exception:
                         pass
+                else:
+                    try:
+                        metadata = json.loads(error_msg) if error_msg else {}
+                        if metadata.get("rules"):
+                            st.session_state.pending_ips_strategies = {
+                                "job_id": job_id,
+                                "file_name": job_name,
+                                "rules": metadata["rules"]
+                            }
+                    except Exception:
+                        pass
                 completed_jobs.append(job_id)
                 st.toast(f"✅ Ingestion complete: {job_name}")
             elif status == "failed":
@@ -1103,11 +1116,64 @@ def render_chatbot_page():
                     st.toast("Holding overwrite cancelled. Uploaded assets will be used for current chat context.")
                     st.rerun()
 
+        # Show pending IPS strategy rules confirmation form if active
+        if st.session_state.get("pending_ips_strategies"):
+            pending_ips = st.session_state.pending_ips_strategies
+            st.markdown(f"🤖 **MarketPulse AI**: I extracted **{len(pending_ips['rules'])}** qualitative strategy rule(s) from **{pending_ips['file_name']}**. Do you want to save them as active strategies?")
+            
+            for idx, rule in enumerate(pending_ips["rules"]):
+                st.markdown(f"{idx+1}. `{rule}`")
+                
+            col_ibtn1, col_ibtn2 = st.columns(2)
+            with col_ibtn1:
+                if st.button("✅ Save Strategy Rules", key="confirm_ips_overwrite", use_container_width=True):
+                    try:
+                        from services.vector_store import get_embedding_provider
+                        embed_provider = get_embedding_provider()
+                        for rule in pending_ips["rules"]:
+                            embedding = embed_provider.get_embedding(rule)
+                            database.save_strategy(rule, embedding)
+                            
+                        confirm_msg = f"✅ **Extracted Strategy Rules Saved**: Added {len(pending_ips['rules'])} rules from `{pending_ips['file_name']}` to your qualitative compliance list."
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": confirm_msg
+                        })
+                        try:
+                            database.save_chat_message(role="assistant", content=confirm_msg)
+                        except Exception as e:
+                            print(f"Error persisting confirm message: {e}")
+                            
+                        del st.session_state.pending_ips_strategies
+                        st.toast("Strategy rules successfully saved!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save strategy rules: {e}")
+            with col_ibtn2:
+                if st.button("❌ Reject Rules", key="cancel_ips_overwrite", use_container_width=True):
+                    cancel_msg = f"❌ **Rejected strategy rules** from `{pending_ips['file_name']}`. No new rules were added."
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": cancel_msg
+                    })
+                    try:
+                        database.save_chat_message(role="assistant", content=cancel_msg)
+                    except Exception as e:
+                        print(f"Error persisting cancel message: {e}")
+                        
+                    del st.session_state.pending_ips_strategies
+                    st.toast("Strategy rules draft discarded.")
+                    st.rerun()
+
         # Render ingestion progress tracker fragment
         poll_ingestion_jobs_status()
 
-        # Chat Input - disabled if strategy or portfolio pending user decision
-        is_pending = bool(st.session_state.get("pending_strategy")) or bool(st.session_state.get("pending_portfolio_overwrite"))
+        # Chat Input - disabled if strategy, portfolio, or IPS pending user decision
+        is_pending = (
+            bool(st.session_state.get("pending_strategy")) or 
+            bool(st.session_state.get("pending_portfolio_overwrite")) or
+            bool(st.session_state.get("pending_ips_strategies"))
+        )
         
         inject_slash_command_palette()
         # Requires Streamlit 1.37.0+
@@ -1176,7 +1242,6 @@ def render_chatbot_page():
             # Block and update status in Streamlit while jobs are active
             if current_active_jobs:
                 status_placeholder = st.empty()
-                import time
                 while any(jid in st.session_state.active_ingestion_jobs for jid in current_active_jobs):
                     time.sleep(1.0)
                     active_desc = []
@@ -1202,6 +1267,16 @@ def render_chatbot_page():
                                             except Exception:
                                                 pass
                                         else:
+                                            try:
+                                                metadata = json.loads(job["error_message"]) if job["error_message"] else {}
+                                                if metadata.get("rules"):
+                                                    st.session_state.pending_ips_strategies = {
+                                                        "job_id": jid,
+                                                        "file_name": jname,
+                                                        "rules": metadata["rules"]
+                                                    }
+                                            except Exception:
+                                                pass
                                             file_context_texts.append(f"[Document '{jname}' processed and indexed in database. Use semantic search/RAG for queries regarding it.]")
                                         st.toast(f"✅ Indexed {jname}!")
                                     else:

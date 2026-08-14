@@ -89,6 +89,24 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     print(f"Routing chatbot user prompt: '{user_prompt[:50]}...'")
     router_output = agent.route_user_intent(user_prompt, has_uploaded_file=has_file, file_context=file_context, holdings_str=holdings_str, status_callback=status_callback)
     
+    # Veto incorrect backtest routing on qualitative document/file queries
+    has_tech_keywords = any(
+        k in user_prompt.lower()
+        for k in ["rsi", "macd", "sma", "ema", "moving average", "crossover", "bollinger", "breakout", "golden cross", "death cross", "rsi_period"]
+    )
+    is_ips_or_file_query = any(
+        k in user_prompt.lower()
+        for k in ["ips", "file", "document", "upload", "ips_sample", "txt", "pdf", "rules", "strategies"]
+    )
+    if is_ips_or_file_query and not has_tech_keywords and router_output and router_output.actions:
+        filtered_actions = []
+        for a in router_output.actions:
+            if a.action_type.lower() == "backtest":
+                print("Vetoing incorrect technical backtest action on qualitative document query.")
+                continue
+            filtered_actions.append(a)
+        router_output.actions = filtered_actions
+
     results = []
     actions_run = []
     pending_strategy = None

@@ -86,6 +86,20 @@ def test_file_format_restriction():
     assert "unsupported_image.png" in toasted
     assert "script.sh" in toasted
 
+def test_ips_strategy_confirmation():
+    import services.storage_service as storage
+    import agent.orchestrator as orchestrator
+    doc_text = "Limit technology sector exposure to a maximum of 40% of total portfolio value."
+    
+    original_generate = orchestrator.generate_ai_response
+    try:
+        orchestrator.generate_ai_response = lambda p, system_instruction=None, tools=None: '["Limit tech exposure to 40%"]'
+        rules = storage.extract_strategies_from_ips("ips_test.pdf", doc_text)
+        assert len(rules) == 1
+        assert rules[0] == "Limit tech exposure to 40%"
+    finally:
+        orchestrator.generate_ai_response = original_generate
+
 def main():
     print("==================================================")
     print("   MARKETPULSE UPLOADED CONTEXT ROUTING TEST SUITE")
@@ -108,12 +122,16 @@ def main():
         test_file_format_restriction()
         print("  [+] File format restrictions test passed.")
         
+        print("\n[Step 5] Testing IPS strategy confirmation drafting...")
+        test_ips_strategy_confirmation()
+        print("  [+] IPS strategy confirmation drafting passed.")
+        
         print("\n==================================================")
         print("   ALL UPLOADED ROUTING TESTS PASSED!             ")
         print("==================================================")
         sys.exit(0)
     except Exception as e:
-        print(f"\n❌ Test suite failed: {e}")
+        print(f"\n[FAIL] Test suite failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
