@@ -303,20 +303,37 @@ def search_document_chunks_semantic(ticker: str, query_embedding: list[float], l
 
 @db_retry
 def create_document(name: str, file_type: str, file_hash: str, storage_path: str) -> str:
-    """Inserts a document metadata record and returns document_id."""
+    """Inserts a document metadata record and returns document_id. If name exists, updates metadata and deletes old chunks."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO documents (name, file_type, file_hash, storage_path)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (user_id, file_hash) DO UPDATE SET name = EXCLUDED.name
-                RETURNING document_id;
-                """,
-                (name, file_type, file_hash, storage_path)
-            )
-            doc_id = cur.fetchone()[0]
+            # Check if document with same name already exists
+            cur.execute("SELECT document_id FROM documents WHERE name = %s;", (name,))
+            row = cur.fetchone()
+            if row:
+                doc_id = row[0]
+                # Update file_hash and storage_path for this document
+                cur.execute(
+                    """
+                    UPDATE documents 
+                    SET file_hash = %s, storage_path = %s 
+                    WHERE document_id = %s;
+                    """,
+                    (file_hash, storage_path, doc_id)
+                )
+                # Delete any existing chunks for this document to prepare for re-ingestion
+                cur.execute("DELETE FROM document_chunks WHERE document_id = %s;", (doc_id,))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO documents (name, file_type, file_hash, storage_path)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (user_id, file_hash) DO UPDATE SET name = EXCLUDED.name
+                    RETURNING document_id;
+                    """,
+                    (name, file_type, file_hash, storage_path)
+                )
+                doc_id = cur.fetchone()[0]
             conn.commit()
             return str(doc_id)
     except Exception as e:

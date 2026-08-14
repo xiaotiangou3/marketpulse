@@ -146,36 +146,56 @@ def process_pdf_into_chunks(file_data: bytes, chunk_size: int = 1000, chunk_over
             
     return processed_chunks
 
-def ingest_portfolio_csv(file_name: str, file_data: bytes, user_prompt: str = "") -> dict:
+def ingest_portfolio_csv(
+    file_name: str, 
+    file_data: bytes, 
+    user_prompt: str = "",
+    ticker_col_override: Optional[str] = None,
+    shares_col_override: Optional[str] = None,
+    cost_col_override: Optional[str] = None
+) -> dict:
     """
     Parses a portfolio CSV file using pandas, maps columns, and returns parsed holdings.
     """
     df = pd.read_csv(io.BytesIO(file_data))
     
     # Normalize column headers
-    cols = {c.lower().replace(" ", "").replace("_", ""): c for c in df.columns}
+    cols = {c.lower().replace(" ", "").replace("_", "").replace("-", ""): c for c in df.columns}
     
-    ticker_col = None
-    shares_col = None
-    cost_col = None
+    # Helper to find column matching a string case-insensitively and stripped
+    def find_col(name: str):
+        if not name:
+            return None
+        target = name.lower().replace(" ", "").replace("_", "").replace("-", "")
+        if target in cols:
+            return cols[target]
+        for c in df.columns:
+            if c.lower().replace(" ", "").replace("_", "").replace("-", "") == target:
+                return c
+        return None
+
+    ticker_col = find_col(ticker_col_override)
+    shares_col = find_col(shares_col_override)
+    cost_col = find_col(cost_col_override)
     
-    # Ticker mapping variations
-    for val in ["ticker", "symbol", "asset", "code"]:
-        if val in cols:
-            ticker_col = cols[val]
-            break
+    # Fallback to automatic detection if overrides not specified or not found
+    if not ticker_col:
+        for val in ["ticker", "symbol", "asset", "code"]:
+            if val in cols:
+                ticker_col = cols[val]
+                break
             
-    # Shares mapping variations
-    for val in ["shares", "qty", "quantity", "volume", "amount"]:
-        if val in cols:
-            shares_col = cols[val]
-            break
+    if not shares_col:
+        for val in ["shares", "qty", "quantity", "volume", "amount"]:
+            if val in cols:
+                shares_col = cols[val]
+                break
             
-    # Cost basis mapping variations
-    for val in ["costbasis", "avgprice", "averageprice", "cost", "purchaseprice", "price"]:
-        if val in cols:
-            cost_col = cols[val]
-            break
+    if not cost_col:
+        for val in ["costbasis", "avgprice", "averageprice", "cost", "purchaseprice", "price"]:
+            if val in cols:
+                cost_col = cols[val]
+                break
             
     # Simple index fallback if naming doesn't match
     if not ticker_col or not shares_col or not cost_col:

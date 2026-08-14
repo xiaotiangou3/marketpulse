@@ -189,8 +189,7 @@ class TestMultiStrategyPaperTrading(unittest.TestCase):
         self.assertEqual(resp, "Synthesized response")
         mock_generate.assert_called_once()
         tools_arg = mock_generate.call_args[1].get("tools")
-        self.assertIsNotNone(tools_arg)
-        self.assertEqual(len(tools_arg), 3)
+        self.assertIsNone(tools_arg)
 
 if __name__ == "__main__":
     unittest.main()

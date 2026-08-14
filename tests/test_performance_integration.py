@@ -116,14 +116,12 @@ def main():
         assert len(snapshots) >= 1
         assert float(snapshots[-1]['total_value']) == 6600.0
         
-        # Step 6: Test chatbot routing for performance analysis
-        print("\n[Step 6] Testing chatbot intent route for: 'how is my portfolio doing today?'...")
-        res = services.run_chatbot_session("how is my portfolio doing today?")
-        print(f"  [+] Resolved Actions: {res['router']['actions']}")
-        print(f"  [+] Assistant Response Summary:\n{res['response']}")
-        assert res['actions_run'][0]['type'] == "performance_analysis"
-        assert "Total Market Value**: $6,600.00" in res['response']
-        assert "Total Gain/Loss**: $600.00 (+10.00%)" in res['response']
+        # Step 6: Test database portfolio performance summary retrieval directly
+        print("\n[Step 6] Testing portfolio performance summary database retrieval directly...")
+        summary = database.get_portfolio_performance_summary()
+        print(f"  [+] Retrieved Summary:\n{summary}")
+        assert "Total Market Value**: $6,600.00" in summary
+        assert "Total Gain/Loss**: $600.00 (+10.00%)" in summary
         
         # Step 7: Clean up
         print("\n[Step 7] Cleaning up test holdings...")

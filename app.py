@@ -1204,6 +1204,62 @@ def render_chatbot_page():
                 except Exception:
                     user_prompt = ""
                 st_files = getattr(user_input_data, "files", []) or []
+            
+            # Check text confirmation for portfolio overwrite
+            if st.session_state.get("pending_portfolio_overwrite") and user_prompt.lower() in ("yes", "y", "overwrite", "confirm", "ok", "yes, overwrite my portfolio", "yes overwrite", "yes, overwrite", "confirm overwrite"):
+                pending_port = st.session_state.pending_portfolio_overwrite
+                try:
+                    # Save user message
+                    try:
+                        database.save_chat_message(role="user", content=user_prompt)
+                    except Exception as e:
+                        print(f"Error persisting user msg: {e}")
+                    st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+                    
+                    database.clear_portfolio_holdings()
+                    for h in pending_port["holdings"]:
+                        services.add_stock_holding(h["ticker"], h["shares"], h["cost_basis"])
+                    
+                    confirm_text = f"✅ Portfolio successfully overwritten with {len(pending_port['holdings'])} holdings from `{pending_port['file_name']}`."
+                    st.toast(confirm_text)
+                    try:
+                        database.save_chat_message(role="assistant", content=confirm_text)
+                    except Exception as e:
+                        print(f"Error persisting holdings overwrite msg: {e}")
+                    st.session_state.chat_history.append({"role": "assistant", "content": confirm_text})
+                    
+                    # Clear state
+                    del st.session_state.pending_portfolio_overwrite
+                    if "last_uploaded_csv" in st.session_state:
+                        del st.session_state.last_uploaded_csv
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to overwrite portfolio: {e}")
+                    st.rerun()
+            elif st.session_state.get("pending_portfolio_overwrite") and user_prompt.lower() in ("no", "n", "cancel", "keep", "keep current", "reject", "no, keep my current portfolio", "no cancel"):
+                try:
+                    # Save user message
+                    try:
+                        database.save_chat_message(role="user", content=user_prompt)
+                    except Exception as e:
+                        print(f"Error persisting user msg: {e}")
+                    st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+                    
+                    reject_text = "Portfolio overwrite cancelled. The uploaded assets are stored in session memory for this conversation context."
+                    try:
+                        database.save_chat_message(role="assistant", content=reject_text)
+                    except Exception as e:
+                        print(f"Error persisting cancel holdings overwrite msg: {e}")
+                    st.session_state.chat_history.append({"role": "assistant", "content": reject_text})
+                    
+                    # Store in active session holdings
+                    st.session_state.active_session_file_holdings = st.session_state.pending_portfolio_overwrite["holdings"]
+                    del st.session_state.pending_portfolio_overwrite
+                    st.toast("Holding overwrite cancelled. Uploaded assets will be used for current chat context.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to cancel overwrite: {e}")
+                    st.rerun()
                 
             # Filter and restrict uploaded files to PDF or CSV only
             valid_files = []
@@ -1218,6 +1274,17 @@ def render_chatbot_page():
                 st.rerun()
                 
             st_files = valid_files
+            
+            # Populate uploaded_files_list for chatbot session routing context
+            uploaded_files_list = []
+            if st_files:
+                for f in st_files:
+                    uploaded_files_list.append({
+                        "name": f.name,
+                        "bytes": f.getvalue()
+                    })
+            elif st.session_state.get("last_uploaded_csv"):
+                uploaded_files_list.append(st.session_state.last_uploaded_csv)
                 
             # Track jobs we kick off in this interaction
             current_active_jobs = {}
@@ -1234,6 +1301,13 @@ def render_chatbot_page():
                     if len(w_clean) >= 1 and len(w_clean) <= 5 and w_clean.isalpha():
                         implied_ticker = w_clean
                         break
+                
+                # Save the bytes in session state temporarily in case of failure/clarification
+                if file_type == "csv":
+                    st.session_state.last_uploaded_csv = {
+                        "name": f.name,
+                        "bytes": f_bytes
+                    }
                 
                 services.start_ingestion_job(job_id, f.name, f_bytes, user_prompt, implied_ticker)
                 st.session_state.active_ingestion_jobs[job_id] = f.name
@@ -1383,6 +1457,8 @@ def render_chatbot_page():
                         st.session_state.last_router_output = res["router"]
                         if res.get("pending_strategy"):
                             st.session_state.pending_strategy = res["pending_strategy"]
+                        if res.get("pending_portfolio_overwrite"):
+                            st.session_state.pending_portfolio_overwrite = res["pending_portfolio_overwrite"]
                         st.rerun()
                     except Exception as e:
                         status_box.update(label="❌ Error processing request", state="error", expanded=True)

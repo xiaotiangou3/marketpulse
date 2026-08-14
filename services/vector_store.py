@@ -110,6 +110,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     results = []
     actions_run = []
     pending_strategy = None
+    pending_portfolio_overwrite = None
     
     for a in router_output.actions:
         a_type = a.action_type.lower()
@@ -170,25 +171,56 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 
         elif a_type == "ingest":
             ticker = a.ticker.upper().strip() if a.ticker else None
-            # Since ingestion is completed asynchronously, we simply verify if the documents were processed.
-            results.append(
-                f"=== Ingestion Complete ===\n"
-                f"Documents have been successfully processed, embedded, and saved in the CockroachDB vector space.\n"
-            )
-            actions_run.append({"type": "ingest", "ticker": ticker, "status": "success"})
+            if not has_file:
+                results.append(
+                    f"=== Ingestion Failed ===\n"
+                    f"No documents were uploaded to ingest.\n"
+                )
+                actions_run.append({"type": "ingest", "ticker": ticker, "status": "missing_file"})
+            else:
+                # If custom column overrides are provided, we run the CSV ingestion synchronously
+                if getattr(a, "csv_ticker_col", None) or getattr(a, "csv_shares_col", None) or getattr(a, "csv_cost_col", None):
+                    import services.storage_service as storage_service
+                    file_name = uploaded_files[0]["name"]
+                    file_data = uploaded_files[0]["bytes"]
+                    try:
+                        ingest_res = storage_service.ingest_portfolio_csv(
+                            file_name=file_name,
+                            file_data=file_data,
+                            user_prompt=user_prompt,
+                            ticker_col_override=a.csv_ticker_col,
+                            shares_col_override=a.csv_shares_col,
+                            cost_col_override=a.csv_cost_col
+                        )
+                        results.append(
+                            f"=== CSV Portfolio Ingested with Custom Columns ===\n"
+                            f"Successfully mapped columns:\n"
+                            f"- Ticker: '{a.csv_ticker_col}'\n"
+                            f"- Shares: '{a.csv_shares_col}'\n"
+                            f"- Cost Basis: '{a.csv_cost_col}'\n"
+                            f"Parsed {len(ingest_res['holdings'])} holdings.\n"
+                        )
+                        actions_run.append({"type": "ingest", "ticker": ticker, "status": "success"})
+                        pending_portfolio_overwrite = {
+                            "file_name": file_name,
+                            "holdings": ingest_res["holdings"],
+                            "overwrite_intent": ingest_res["overwrite_intent"]
+                        }
+                    except Exception as e:
+                        results.append(
+                            f"=== CSV Custom Ingestion Failed ===\n"
+                            f"Error: {e}\n"
+                        )
+                        actions_run.append({"type": "ingest", "ticker": ticker, "status": "error", "error": str(e)})
+                else:
+                    # Since ingestion is completed asynchronously, we simply verify if the documents were processed.
+                    results.append(
+                        f"=== Ingestion Complete ===\n"
+                        f"Documents have been successfully processed, embedded, and saved in the CockroachDB vector space.\n"
+                    )
+                    actions_run.append({"type": "ingest", "ticker": ticker, "status": "success"})
                 
-        elif a_type == "performance_analysis":
-            if status_callback:
-                status_callback("📈 Computing portfolio performance & valuation...", "Querying portfolio holdings and latest stock prices...")
-            try:
-                perf_report = database.get_portfolio_performance_summary(custom_holdings=custom_holdings, status_callback=status_callback)
-                results.append(perf_report)
-                actions_run.append({"type": "performance_analysis", "status": "success"})
-            except Exception as e:
-                results.append(f"=== Performance Analysis Failed ===\nError: {e}\n")
-                actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
-                if status_callback:
-                    status_callback("⚠️ Performance analysis encountered an issue", f"Error: {e}")
+
 
         elif a_type == "backtest":
             ticker = a.ticker.upper().strip() if a.ticker else None
@@ -334,125 +366,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                 actions_run.append({"type": "paper_trade", "status": "missing_args"})
 
 
-        elif a_type == "add_strategy":
 
-            strategy_text = a.strategy_text
-            if strategy_text:
-                if status_callback:
-                    status_callback("🎯 Drafting qualitative strategy rule...", f"Drafted rule: '{strategy_text}' (pending user confirmation)")
-                remaining_actions = []
-                current_action_idx = router_output.actions.index(a)
-                for rem_a in router_output.actions[current_action_idx+1:]:
-                    if rem_a.action_type.lower() != "none":
-                        remaining_actions.append({
-                            "action_type": rem_a.action_type,
-                            "ticker": rem_a.ticker,
-                            "scenario": rem_a.scenario,
-                            "strategy_text": rem_a.strategy_text,
-                            "strategy_target": rem_a.strategy_target
-                        })
-                pending_strategy = {
-                    "action_type": "add_strategy",
-                    "strategy_text": strategy_text,
-                    "strategy_target": None,
-                    "remaining_actions": remaining_actions,
-                    "original_prompt": user_prompt
-                }
-                results.append(
-                    f"=== Strategy Rule Drafted ===\n"
-                    f"Drafted new strategy rule: '{strategy_text}'\n"
-                    f"Remaining actions to run after user confirmation: {[act['action_type'] for act in remaining_actions]}\n"
-                )
-                actions_run.append({"type": "add_strategy", "strategy_text": strategy_text, "status": "drafted"})
-                break
-            else:
-                results.append("=== Add Strategy Error ===\nStrategy guideline text was not specified by router.\n")
-                actions_run.append({"type": "add_strategy", "status": "missing_args"})
-
-        elif a_type == "delete_strategy":
-            target = a.strategy_target
-            if target:
-                if status_callback:
-                    status_callback("🗑️ Resolving and deleting strategy guideline...", f"Searching strategy guideline matching '{target}'...")
-                try:
-                    matching_id = agent.resolve_strategy_match(target, current_strats)
-                    if matching_id:
-                        matched_s = next(s for s in current_strats if s['strategy_id'] == matching_id)
-                        database.remove_strategy(matching_id)
-                        results.append(
-                            f"=== Strategy Rule Deleted ===\n"
-                            f"Successfully removed strategy guideline: '{matched_s['strategy_text']}'\n"
-                        )
-                        actions_run.append({"type": "delete_strategy", "strategy_target": target, "status": "success"})
-                        if status_callback:
-                            status_callback("✅ Strategy rule removed", f"Deleted: '{matched_s['strategy_text']}'")
-                    else:
-                        results.append(
-                            f"=== Delete Strategy Warning ===\n"
-                            f"Could not find a matching strategy rule for reference: '{target}'\n"
-                        )
-                        actions_run.append({"type": "delete_strategy", "strategy_target": target, "status": "no_match"})
-                except Exception as e:
-                    results.append(f"=== Delete Strategy Failed ===\nError: {e}\n")
-                    actions_run.append({"type": "delete_strategy", "strategy_target": target, "status": "error", "error": str(e)})
-            else:
-                results.append("=== Delete Strategy Error ===\nTarget strategy descriptor or index was not specified by router.\n")
-                actions_run.append({"type": "delete_strategy", "status": "missing_args"})
-
-        elif a_type == "update_strategy":
-            target = a.strategy_target
-            new_text = a.strategy_text
-            if target:
-                if status_callback:
-                    status_callback("✏️ Resolving and drafting strategy update...", f"Updating rule matching '{target}'...")
-                try:
-                    matching_id = agent.resolve_strategy_match(target, current_strats)
-                    if matching_id:
-                        matched_s = next(s for s in current_strats if s['strategy_id'] == matching_id)
-                        
-                        # Default to existing text if not provided in user prompt
-                        if not new_text:
-                            new_text = matched_s['strategy_text']
-                            
-                        remaining_actions = []
-                        current_action_idx = router_output.actions.index(a)
-                        for rem_a in router_output.actions[current_action_idx+1:]:
-                            if rem_a.action_type.lower() != "none":
-                                remaining_actions.append({
-                                    "action_type": rem_a.action_type,
-                                    "ticker": rem_a.ticker,
-                                    "scenario": rem_a.scenario,
-                                    "strategy_text": rem_a.strategy_text,
-                                    "strategy_target": rem_a.strategy_target
-                                })
-                        pending_strategy = {
-                            "action_type": "update_strategy",
-                            "strategy_text": new_text,
-                            "strategy_target": target,
-                            "remaining_actions": remaining_actions,
-                            "original_prompt": user_prompt
-                        }
-                        results.append(
-                            f"=== Strategy Rule Update Drafted ===\n"
-                            f"Drafted update for strategy rule:\n"
-                            f"From: '{matched_s['strategy_text']}'\n"
-                            f"To: '{new_text}'\n"
-                            f"Remaining actions to run after user confirmation: {[act['action_type'] for act in remaining_actions]}\n"
-                        )
-                        actions_run.append({"type": "update_strategy", "strategy_target": target, "new_text": new_text, "status": "drafted"})
-                        break
-                    else:
-                        results.append(
-                            f"=== Update Strategy Warning ===\n"
-                            f"Could not find a matching strategy rule to update for reference: '{target}'\n"
-                        )
-                        actions_run.append({"type": "update_strategy", "strategy_target": target, "status": "no_match"})
-                except Exception as e:
-                    results.append(f"=== Update Strategy Failed ===\nError: {e}\n")
-                    actions_run.append({"type": "update_strategy", "strategy_target": target, "status": "error", "error": str(e)})
-            else:
-                results.append("=== Update Strategy Error ===\nTarget strategy descriptor or index must be specified.\n")
-                actions_run.append({"type": "update_strategy", "status": "missing_args"})
 
         elif a_type == "list_strategies":
             if status_callback:
@@ -474,11 +388,26 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     results_summary = "\n".join(results)
     if not results_summary:
         print("Executing conversational direct response...")
-        final_response = agent.generate_conversational_response(user_prompt, strategies_str, file_context, status_callback=status_callback)
+        final_response = agent.generate_conversational_response(
+            user_prompt,
+            strategies_str,
+            file_context,
+            status_callback=status_callback,
+            allowed_actions=[a.action_type for a in router_output.actions],
+            contract=router_output.contract
+        )
         actions_run.append({"type": "conversational"})
     else:
         print("Synthesizing workflow actions results into chatbot response...")
-        final_response = agent.synthesize_chat_response(user_prompt, results_summary, strategies_str, file_context, status_callback=status_callback)
+        final_response = agent.synthesize_chat_response(
+            user_prompt,
+            results_summary,
+            strategies_str,
+            file_context,
+            status_callback=status_callback,
+            allowed_actions=[a.action_type for a in router_output.actions],
+            contract=router_output.contract
+        )
         
     elapsed = time.time() - start_time
     session_metadata = {
@@ -511,6 +440,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         },
         "actions_run": actions_run,
         "pending_strategy": pending_strategy,
+        "pending_portfolio_overwrite": pending_portfolio_overwrite,
         "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None,
         "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None
     }
@@ -597,19 +527,7 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
             results.append("=== Ingestion Error ===\nDocument ingestion continuation is not supported from cached actions.\n")
             actions_run.append({"type": "ingest", "status": "unsupported_continuation"})
             
-        elif a_type == "performance_analysis":
-            if status_callback:
-                status_callback("📈 Computing portfolio performance...", "Calculating latest valuations & returns...")
-            try:
-                custom_holdings = database.extract_holdings_from_context(file_context) if 'file_context' in locals() else None
-                perf_report = database.get_portfolio_performance_summary(custom_holdings=custom_holdings, status_callback=status_callback)
-                results.append(perf_report)
-                actions_run.append({"type": "performance_analysis", "status": "success"})
-            except Exception as e:
-                results.append(f"=== Performance Analysis Failed ===\nError: {e}\n")
-                actions_run.append({"type": "performance_analysis", "status": "error", "error": str(e)})
-                if status_callback:
-                    status_callback("⚠️ Performance analysis failed", f"Error: {e}")
+
 
         elif a_type == "paper_trade":
             ticker = a_dict.get("ticker") if isinstance(a_dict, dict) else getattr(a_dict, "ticker", None)
