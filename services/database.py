@@ -91,6 +91,9 @@ def run_migrations():
                 cur.execute("INSERT INTO schema_version (version) VALUES (%s);", (version,))
                 conn.commit()
                 print(f"Migration {f} applied successfully.")
+            
+            # After applying migrations, recover any interrupted jobs
+            recover_interrupted_ingestion_jobs()
     except Exception as e:
         conn.rollback()
         print(f"Migration failed: {e}")
@@ -233,25 +236,43 @@ def search_strategies_semantic(query_embedding: list[float], limit: int = 3):
     finally:
         release_db_connection(conn)
 
+import psycopg2.extras
+
 @db_retry
-def save_document_chunks(doc_name: str, ticker: str, chunks: list[dict]):
+def save_document_chunks_batch(document_id: str, ticker: Optional[str], chunks: list[dict]):
     """
-    Saves a batch of document chunks.
-    Each chunk dict should contain: 'chunk_index', 'chunk_text', 'embedding', and 'chunk_metadata'.
+    Saves a batch of document chunks using psycopg2.extras.execute_values for performance.
     """
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            values = []
             for chunk in chunks:
                 embedding_str = "[" + ",".join(map(str, chunk['embedding'])) + "]"
                 metadata_str = json.dumps(chunk.get('chunk_metadata', {}))
-                cur.execute(
-                    """
-                    INSERT INTO document_chunks (document_name, ticker, chunk_index, chunk_text, embedding, chunk_metadata)
-                    VALUES (%s, %s, %s, %s, %s::VECTOR, %s::JSONB);
-                    """,
-                    (doc_name, ticker.upper().strip(), chunk['chunk_index'], chunk['chunk_text'], embedding_str, metadata_str)
-                )
+                ticker_val = ticker.upper().strip() if ticker else None
+                page_num = chunk.get('chunk_metadata', {}).get('page_number', 1)
+                values.append((
+                    'demo_user',
+                    document_id,
+                    ticker_val,
+                    chunk['chunk_index'],
+                    chunk['chunk_text'],
+                    embedding_str,
+                    page_num,
+                    metadata_str
+                ))
+            
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO document_chunks (user_id, document_id, ticker, chunk_index, chunk_text, embedding, page_number, chunk_metadata)
+                VALUES %s
+                ON CONFLICT (document_id, chunk_index) DO NOTHING;
+                """,
+                values,
+                template="(%s, %s, %s, %s, %s, %s::VECTOR, %s, %s::JSONB)"
+            )
             conn.commit()
     except Exception as e:
         conn.rollback()
@@ -267,15 +288,186 @@ def search_document_chunks_semantic(ticker: str, query_embedding: list[float], l
             embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
             cur.execute(
                 """
-                SELECT chunk_id, document_name, chunk_index, chunk_text, chunk_metadata, (embedding <=> %s::VECTOR) AS distance
-                FROM document_chunks
-                WHERE ticker = %s
+                SELECT c.chunk_id, d.name AS document_name, c.chunk_index, c.chunk_text, c.chunk_metadata, (c.embedding <=> %s::VECTOR) AS distance
+                FROM document_chunks c
+                JOIN documents d ON c.document_id = d.document_id
+                WHERE c.ticker = %s AND c.document_id IS NOT NULL
                 ORDER BY distance ASC
                 LIMIT %s;
                 """,
                 (embedding_str, ticker.upper().strip(), limit)
             )
             return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def create_document(name: str, file_type: str, file_hash: str, storage_path: str) -> str:
+    """Inserts a document metadata record and returns document_id."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO documents (name, file_type, file_hash, storage_path)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, file_hash) DO UPDATE SET name = EXCLUDED.name
+                RETURNING document_id;
+                """,
+                (name, file_type, file_hash, storage_path)
+            )
+            doc_id = cur.fetchone()[0]
+            conn.commit()
+            return str(doc_id)
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_document_by_hash(file_hash: str) -> Optional[dict]:
+    """Retrieves document by its SHA-256 hash."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                "SELECT document_id, name, file_type, file_hash, storage_path, created_at FROM documents WHERE file_hash = %s;",
+                (file_hash,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_all_documents() -> list[dict]:
+    """Retrieves all indexed documents from the database."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT document_id, name, file_type, file_hash, storage_path, created_at FROM documents ORDER BY created_at DESC;")
+            rows = cur.fetchall()
+            return [
+                {
+                    "document_id": str(r[0]),
+                    "name": r[1],
+                    "file_type": r[2],
+                    "file_hash": r[3],
+                    "storage_path": r[4],
+                    "created_at": r[5]
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        print(f"Error fetching all documents: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def create_ingestion_job(document_name: str, file_type: str) -> str:
+    """Creates a new queued ingestion job record and returns its job_id."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ingestion_jobs (document_name, file_type, status, progress_pct)
+                VALUES (%s, %s, 'queued', 0)
+                RETURNING job_id;
+                """,
+                (document_name, file_type)
+            )
+            job_id = cur.fetchone()[0]
+            conn.commit()
+            return str(job_id)
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def update_ingestion_job_status(job_id: str, status: str, progress_pct: int, error_message: str = None):
+    """Updates status, progress percentage, and optional error message for a job."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ingestion_jobs
+                SET status = %s,
+                    progress_pct = %s,
+                    error_message = %s,
+                    updated_at = now()
+                WHERE job_id = %s;
+                """,
+                (status, progress_pct, error_message, job_id)
+            )
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_ingestion_job(job_id: str) -> Optional[dict]:
+    """Retrieves details of a specific ingestion job."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                "SELECT job_id, document_name, file_type, status, progress_pct, error_message, created_at, updated_at FROM ingestion_jobs WHERE job_id = %s;",
+                (job_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def get_all_queued_or_active_jobs() -> list[dict]:
+    """Retrieves all jobs currently queued or in-progress."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                "SELECT job_id, document_name, file_type, status, progress_pct, error_message FROM ingestion_jobs WHERE status IN ('queued', 'extracting', 'chunking', 'embedding', 'persisting') ORDER BY created_at ASC;"
+            )
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+@db_retry
+def recover_interrupted_ingestion_jobs() -> list[str]:
+    """Resets in-progress jobs back to queued status on startup and returns their IDs for execution."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT job_id FROM ingestion_jobs WHERE status IN ('queued', 'extracting', 'chunking', 'embedding', 'persisting');"
+            )
+            job_ids = [str(row[0]) for row in cur.fetchall()]
+            
+            if job_ids:
+                cur.execute(
+                    """
+                    UPDATE ingestion_jobs
+                    SET status = 'queued',
+                        progress_pct = 0,
+                        error_message = NULL,
+                        updated_at = now()
+                    WHERE status IN ('queued', 'extracting', 'chunking', 'embedding', 'persisting');
+                    """
+                )
+                conn.commit()
+            return job_ids
+    except Exception as e:
+        conn.rollback()
+        print(f"Startup job recovery failed: {e}")
+        return []
     finally:
         release_db_connection(conn)
 
@@ -677,8 +869,32 @@ import datetime
 from .news_service import fetch_and_store_news, get_stored_news
 
 
-def calculate_performance_metrics():
-    holdings = get_holdings()
+def extract_holdings_from_context(file_context: str) -> Optional[list[dict]]:
+    """Parses uploaded portfolio CSV holdings context from formatted file_context text."""
+    if not file_context or "Uploaded Portfolio CSV Holdings Context:" not in file_context:
+        return None
+    holdings = []
+    lines = file_context.split("\n")
+    for line in lines:
+        line = line.strip()
+        if line.startswith("- Ticker:"):
+            try:
+                parts = line.split(",")
+                ticker = parts[0].split(":")[1].strip().upper()
+                shares = float(parts[1].split(":")[1].strip())
+                cost_str = parts[2].split(":")[1].strip().replace("$", "")
+                cost_basis = float(cost_str)
+                holdings.append({
+                    "ticker": ticker,
+                    "shares": shares,
+                    "cost_basis": cost_basis
+                })
+            except Exception:
+                continue
+    return holdings if holdings else None
+
+def calculate_performance_metrics(custom_holdings: list[dict] = None):
+    holdings = custom_holdings if custom_holdings is not None else get_holdings()
     latest_prices = get_latest_prices()
     total_value = 0.0
     total_cost = 0.0
@@ -740,10 +956,10 @@ def calculate_performance_metrics():
         'holdings_details': holdings_details
     }
 
-def get_portfolio_performance_summary(status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
+def get_portfolio_performance_summary(custom_holdings: list[dict] = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
     if status_callback:
         status_callback("📈 Computing portfolio performance metrics...", "Fetching latest market quotes and calculating valuation & returns...")
-    metrics = calculate_performance_metrics()
+    metrics = calculate_performance_metrics(custom_holdings=custom_holdings)
     if metrics['total_cost'] == 0.0:
         return 'Your portfolio is currently empty. Add positions to calculate performance.'
         
@@ -754,12 +970,12 @@ def get_portfolio_performance_summary(status_callback: Optional[Callable[[str, O
         
     return summary
 
-def execute_stress_test(scenario_prompt, status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
+def execute_stress_test(scenario_prompt, custom_holdings: list[dict] = None, status_callback: Optional[Callable[[str, Optional[str]], None]] = None):
     start_time = time.time()
     print(f"Executing macro stress test for scenario: '{scenario_prompt}'...")
     if status_callback:
         status_callback("📊 Loading active portfolio holdings & strategy rules...", "Querying CockroachDB relational engine...")
-    holdings = get_holdings()
+    holdings = custom_holdings if custom_holdings is not None else get_holdings()
     
     holdings_str = ''
     for h in holdings:

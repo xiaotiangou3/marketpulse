@@ -29,6 +29,10 @@ class EmbeddingProvider(abc.ABC):
         """Generates a 768-dimensional embedding vector for the text."""
         pass
 
+    def get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
+        """Generates 768-dimensional embedding vectors for a batch of texts by default sequentially."""
+        return [self.get_embedding(t) for t in texts]
+
 class GeminiEmbeddingProvider(EmbeddingProvider):
     def __init__(self):
         if not config.GEMINI_API_KEY:
@@ -45,6 +49,19 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             )
         )
         return response.embeddings[0].values
+
+    @api_retry
+    def get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        response = self.client.models.embed_content(
+            model=config.EMBEDDING_MODEL,
+            contents=texts,
+            config=types.EmbedContentConfig(
+                output_dimensionality=768
+            )
+        )
+        return [emb.values for emb in response.embeddings]
 
 # ==========================================
 # NEWS PROVIDER ABSTRACTION

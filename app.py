@@ -84,6 +84,21 @@ try:
 except Exception as e:
     st.error(f"Failed to execute database migrations: {e}")
 
+# Initialize session state variables
+if "active_ingestion_jobs" not in st.session_state:
+    st.session_state.active_ingestion_jobs = {}
+if "pending_portfolio_overwrite" not in st.session_state:
+    st.session_state.pending_portfolio_overwrite = None
+if "active_session_file_holdings" not in st.session_state:
+    st.session_state.active_session_file_holdings = None
+if "pending_toasts" not in st.session_state:
+    st.session_state.pending_toasts = []
+
+# Render and clear pending toasts
+for msg in st.session_state.pending_toasts:
+    st.toast(msg)
+st.session_state.pending_toasts = []
+
 # Header
 st.markdown("""
 <div class="marketpulse-header">
@@ -811,6 +826,56 @@ def render_trade_receipt_card(trade_data: dict):
         
         st.caption("💡 *Track live positions, cash balance, and virtual equity in the 🧪 **Paper Trading Sandbox** tab.*")
 
+@st.fragment(run_every=5)
+def poll_ingestion_jobs_status():
+    if not st.session_state.get("active_ingestion_jobs"):
+        return
+        
+    st.markdown("### 📥 Ingestion Progress")
+    completed_jobs = []
+    failed_jobs = []
+    
+    for job_id, job_name in list(st.session_state.active_ingestion_jobs.items()):
+        try:
+            job = database.get_ingestion_job(job_id)
+            if not job:
+                continue
+                
+            status = job["status"]
+            progress = job["progress_pct"]
+            error_msg = job["error_message"]
+            
+            if status == "completed":
+                if job["file_type"] == "csv":
+                    try:
+                        metadata = json.loads(error_msg) if error_msg else {}
+                        if metadata.get("overwrite_intent"):
+                            st.session_state.pending_portfolio_overwrite = {
+                                "job_id": job_id,
+                                "file_name": job_name,
+                                "holdings": metadata["holdings"]
+                            }
+                        else:
+                            st.session_state.active_session_file_holdings = metadata["holdings"]
+                    except Exception:
+                        pass
+                completed_jobs.append(job_id)
+                st.toast(f"✅ Ingestion complete: {job_name}")
+            elif status == "failed":
+                failed_jobs.append(job_id)
+                st.error(f"❌ Ingestion failed for {job_name}: {error_msg}")
+            else:
+                st.progress(progress / 100.0, text=f"**{job_name}**: {status.capitalize()} ({progress}%)")
+        except Exception as e:
+            print(f"Error polling job {job_id}: {e}")
+            
+    for jid in completed_jobs + failed_jobs:
+        if jid in st.session_state.active_ingestion_jobs:
+            del st.session_state.active_ingestion_jobs[jid]
+            
+    if completed_jobs or failed_jobs:
+        st.rerun()
+
 def render_chatbot_page():
     col_header, col_new = st.columns([3, 1])
     with col_header:
@@ -979,15 +1044,78 @@ def render_chatbot_page():
                         st.toast("Strategy update cancelled.")
                         st.rerun()
 
-        # Chat Input - disabled if strategy pending user decision
-        is_pending = bool(st.session_state.get("pending_strategy"))
+        # Show pending portfolio overwrite confirmation form if active
+        if st.session_state.get("pending_portfolio_overwrite"):
+            pending_port = st.session_state.pending_portfolio_overwrite
+            st.markdown(f"🤖 **MarketPulse AI**: I parsed the portfolio CSV **{pending_port['file_name']}**. Do you want to overwrite your active holdings with these new items?")
+            
+            # Render a summary table of the new holdings
+            holdings_df = pd.DataFrame(pending_port["holdings"])
+            st.dataframe(holdings_df, hide_index=True)
+            
+            col_pbtn1, col_pbtn2 = st.columns(2)
+            with col_pbtn1:
+                if st.button("✅ Overwrite Holdings", key="confirm_port_overwrite", use_container_width=True):
+                    try:
+                        # Overwrite holdings in DB
+                        # First delete all holdings
+                        conn = database.get_db_connection()
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute("DELETE FROM user_holdings;")
+                                conn.commit()
+                        finally:
+                            database.release_db_connection(conn)
+                            
+                        # Insert new holdings
+                        for h in pending_port["holdings"]:
+                            database.add_holding(h["ticker"], h["shares"], h["cost_basis"])
+                            
+                        confirm_msg = f"✅ **Portfolio Holdings Overwritten** with {len(pending_port['holdings'])} assets from `{pending_port['file_name']}`."
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": confirm_msg
+                        })
+                        try:
+                            database.save_chat_message(role="assistant", content=confirm_msg)
+                        except Exception as e:
+                            print(f"Error persisting holdings overwrite msg: {e}")
+                            
+                        del st.session_state.pending_portfolio_overwrite
+                        st.toast("Portfolio holdings successfully updated!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to update holdings: {e}")
+            with col_pbtn2:
+                if st.button("❌ Keep Current & Analyze Uploaded Only", key="cancel_port_overwrite", use_container_width=True):
+                    cancel_msg = f"ℹ️ **Using uploaded CSV data for analysis context only** without overwriting your portfolio."
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": cancel_msg
+                    })
+                    try:
+                        database.save_chat_message(role="assistant", content=cancel_msg)
+                    except Exception as e:
+                        print(f"Error persisting cancel holdings overwrite msg: {e}")
+                        
+                    st.session_state.active_session_file_holdings = pending_port["holdings"]
+                    del st.session_state.pending_portfolio_overwrite
+                    st.toast("Holding overwrite cancelled. Uploaded assets will be used for current chat context.")
+                    st.rerun()
+
+        # Render ingestion progress tracker fragment
+        poll_ingestion_jobs_status()
+
+        # Chat Input - disabled if strategy or portfolio pending user decision
+        is_pending = bool(st.session_state.get("pending_strategy")) or bool(st.session_state.get("pending_portfolio_overwrite"))
         
         inject_slash_command_palette()
         # Requires Streamlit 1.37.0+
         user_input_data = st.chat_input(
             "Ask MarketPulse AI or type '/' for commands...", 
             disabled=is_pending,
-            accept_file="multiple"
+            accept_file="multiple",
+            file_type=["pdf", "csv"]
         )
 
         if user_input_data:
@@ -1011,27 +1139,119 @@ def render_chatbot_page():
                     user_prompt = ""
                 st_files = getattr(user_input_data, "files", []) or []
                 
+            # Filter and restrict uploaded files to PDF or CSV only
+            valid_files = []
+            for f in st_files:
+                if not f.name.lower().endswith(('.pdf', '.csv')):
+                    st.session_state.pending_toasts.append(f"❌ Unsupported file format: `{f.name}`. Only PDF and CSV files are allowed.")
+                else:
+                    valid_files.append(f)
+            
+            # If no prompt and no valid files are present, skip execution
+            if not user_prompt and not valid_files:
+                st.rerun()
+                
+            st_files = valid_files
+                
+            # Track jobs we kick off in this interaction
+            current_active_jobs = {}
             for f in st_files:
                 f_bytes = f.getvalue()
-                uploaded_files_list.append({
-                    "name": f.name,
-                    "bytes": f_bytes
-                })
-                try:
-                    if f.name.lower().endswith(".pdf"):
-                        import pypdf
-                        import io
-                        pdf_reader = pypdf.PdfReader(io.BytesIO(f_bytes))
-                        text = "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
-                        file_context_texts.append(f"--- File: {f.name} ---\n{text}")
-                    else:
-                        file_context_texts.append(f"--- File: {f.name} ---\n{f_bytes.decode('utf-8')}")
-                except Exception as e:
-                    st.warning(f"Could not read text context from {f.name}: {e}")
+                file_type = "csv" if f.name.lower().endswith(".csv") else "pdf"
+                job_id = database.create_ingestion_job(f.name, file_type)
+                
+                # Extract ticker if any ticker is implied in user prompt
+                implied_ticker = None
+                words = user_prompt.upper().split()
+                for w in words:
+                    w_clean = "".join([c for c in w if c.isalnum()])
+                    if len(w_clean) >= 1 and len(w_clean) <= 5 and w_clean.isalpha():
+                        implied_ticker = w_clean
+                        break
+                
+                services.start_ingestion_job(job_id, f.name, f_bytes, user_prompt, implied_ticker)
+                st.session_state.active_ingestion_jobs[job_id] = f.name
+                current_active_jobs[job_id] = f.name
+                
+            # Block and update status in Streamlit while jobs are active
+            if current_active_jobs:
+                status_placeholder = st.empty()
+                import time
+                while any(jid in st.session_state.active_ingestion_jobs for jid in current_active_jobs):
+                    time.sleep(1.0)
+                    active_desc = []
+                    for jid, jname in list(current_active_jobs.items()):
+                        job = database.get_ingestion_job(jid)
+                        if job:
+                            status = job["status"]
+                            progress = job["progress_pct"]
+                            if status in ("completed", "failed"):
+                                if jid in st.session_state.active_ingestion_jobs:
+                                    if status == "completed":
+                                        if job["file_type"] == "csv":
+                                            try:
+                                                metadata = json.loads(job["error_message"]) if job["error_message"] else {}
+                                                if metadata.get("overwrite_intent"):
+                                                    st.session_state.pending_portfolio_overwrite = {
+                                                        "job_id": jid,
+                                                        "file_name": jname,
+                                                        "holdings": metadata["holdings"]
+                                                    }
+                                                else:
+                                                    st.session_state.active_session_file_holdings = metadata["holdings"]
+                                            except Exception:
+                                                pass
+                                        else:
+                                            file_context_texts.append(f"[Document '{jname}' processed and indexed in database. Use semantic search/RAG for queries regarding it.]")
+                                        st.toast(f"✅ Indexed {jname}!")
+                                    else:
+                                        st.error(f"❌ Failed to index {jname}: {job['error_message']}")
+                                    del st.session_state.active_ingestion_jobs[jid]
+                            else:
+                                active_desc.append(f"🔄 **{jname}**: {status.capitalize()} ({progress}%)")
                     
+                    if active_desc:
+                        status_placeholder.markdown("\n".join(active_desc))
+                    else:
+                        status_placeholder.empty()
+                status_placeholder.empty()
+
+            # Fetch and append all indexed documents in database to the context
+            try:
+                all_docs = database.get_all_documents()
+                if all_docs:
+                    docs_list_str = "### INDEXED DOCUMENTS IN DATABASE ###\n"
+                    for d in all_docs:
+                        docs_list_str += f"- Name: {d['name']} (Type: {d['file_type']})\n"
+                    file_context_texts.append(docs_list_str)
+            except Exception as e:
+                print(f"Error appending indexed documents to context: {e}")
+
+            # Append active session file holdings context if present (e.g. portfolio uploaded for analysis)
+            if st.session_state.get("active_session_file_holdings"):
+                holdings_list = st.session_state.active_session_file_holdings
+                uploaded_filename = st_files[0].name if st_files else "portfolio.csv"
+                context_str = f"### CURRENTLY UPLOADED FILE ###\nFile Name: {uploaded_filename}\nUploaded Portfolio CSV Holdings Context:\n"
+                for h in holdings_list:
+                    context_str += f"- Ticker: {h['ticker']}, Shares: {h['shares']}, Cost Basis: ${h['cost_basis']}\n"
+                
+                est_tokens = len(context_str) // 4
+                if est_tokens < config.DIRECT_CONTEXT_TOKEN_THRESHOLD:
+                    file_context_texts.append(context_str)
+                else:
+                    file_context_texts.append(f"[Uploaded portfolio CSV '{uploaded_filename}' contains too many rows ({len(holdings_list)}). Relying on database search.]")
+                st.session_state.active_session_file_holdings = None # Consume
+                
             file_context = "\n\n".join(file_context_texts) if file_context_texts else None
             
-            display_prompt = user_prompt if user_prompt else f"[Attached {len(st_files)} file(s)]"
+            if st_files:
+                file_badges = ", ".join([f"`{f.name}`" for f in st_files])
+                if user_prompt:
+                    display_prompt = f"{user_prompt}\n\n📎 **Attached:** {file_badges}"
+                else:
+                    display_prompt = f"📎 **Attached:** {file_badges}"
+            else:
+                display_prompt = user_prompt
             
             try:
                 database.save_chat_message(role="user", content=display_prompt)

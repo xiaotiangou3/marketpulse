@@ -1,10 +1,17 @@
 import services.database as database
 import io
 import pypdf
+import hashlib
+import json
+import threading
+import pandas as pd
 from supabase import create_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
+
 _supabase_client = None
+_active_jobs_lock = threading.Lock()
+_active_jobs = set()
 
 def get_supabase_client():
     global _supabase_client
@@ -38,7 +45,6 @@ def upload_pdf_to_supabase(file_name: str, file_data: bytes, bucket_name: str = 
     clean_name = file_name.replace(" ", "_")
     try:
         client = get_supabase_client()
-        # Try ensuring bucket exists
         ensure_bucket_exists(bucket_name)
         
         print(f"Uploading file '{clean_name}' to Supabase bucket '{bucket_name}'...")
@@ -59,7 +65,7 @@ def upload_pdf_to_supabase(file_name: str, file_data: bytes, bucket_name: str = 
         return f"supabase://{bucket_name}/{clean_name}"
     except Exception as e:
         print(f"Warning: Supabase upload failed due to storage policies or connectivity: {e}")
-        print("Falling back to local reference. PDF text parsing and CockroachDB vector indexing will still proceed.")
+        print("Falling back to local reference.")
         return f"local://{clean_name}"
 
 def extract_text_by_page(file_data: bytes) -> list[dict]:
@@ -133,42 +139,261 @@ def process_pdf_into_chunks(file_data: bytes, chunk_size: int = 1000, chunk_over
                 "chunk_text": c_text,
                 "chunk_metadata": {
                     "page_number": page_num,
-                    "char_count": len(c_text),
-                    "source": "earnings_transcript"
+                    "char_count": len(c_text)
                 }
             })
             chunk_index += 1
             
     return processed_chunks
 
-def ingest_pdf_transcript(file_name: str, file_data: bytes, ticker: str):
+def ingest_portfolio_csv(file_name: str, file_data: bytes, user_prompt: str = "") -> dict:
     """
-    Orchestrates the ingestion, chunking, embedding, and database storage of a PDF transcript.
+    Parses a portfolio CSV file using pandas, maps columns, and returns parsed holdings.
     """
-    ticker = ticker.upper().strip()
-    print(f"Ingesting PDF transcript '{file_name}' for {ticker}...")
+    df = pd.read_csv(io.BytesIO(file_data))
     
-    # 1. Upload to Supabase Storage
-    storage_path = upload_pdf_to_supabase(file_name, file_data)
-    print(f"  [+] Uploaded to Supabase Storage: {storage_path}")
+    # Normalize column headers
+    cols = {c.lower().replace(" ", "").replace("_", ""): c for c in df.columns}
     
-    # 2. Extract and split text recursively
-    chunks = process_pdf_into_chunks(file_data, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
-    print(f"  [+] Processed PDF into {len(chunks)} chunks.")
+    ticker_col = None
+    shares_col = None
+    cost_col = None
     
-    if not chunks:
-        print("  [!] Warning: No text extracted or chunked from PDF. Skipping database insert.")
-        return
+    # Ticker mapping variations
+    for val in ["ticker", "symbol", "asset", "code"]:
+        if val in cols:
+            ticker_col = cols[val]
+            break
+            
+    # Shares mapping variations
+    for val in ["shares", "qty", "quantity", "volume", "amount"]:
+        if val in cols:
+            shares_col = cols[val]
+            break
+            
+    # Cost basis mapping variations
+    for val in ["costbasis", "avgprice", "averageprice", "cost", "purchaseprice", "price"]:
+        if val in cols:
+            cost_col = cols[val]
+            break
+            
+    # Simple index fallback if naming doesn't match
+    if not ticker_col or not shares_col or not cost_col:
+        if len(df.columns) >= 3:
+            ticker_col = df.columns[0]
+            shares_col = df.columns[1]
+            cost_col = df.columns[2]
+            
+    if not ticker_col or not shares_col or not cost_col:
+        raise ValueError("Could not automatically map columns. Ensure CSV has Ticker, Shares, and Cost Basis headers.")
         
-    # 3. Generate embeddings for each chunk
-    from .vector_store import get_embedding_provider
-    embed_provider = get_embedding_provider()
-    for chunk in chunks:
-        chunk_text = chunk["chunk_text"]
-        print(f"  Generating embedding for chunk {chunk['chunk_index']} ({len(chunk_text)} chars)...")
-        chunk["embedding"] = embed_provider.get_embedding(chunk_text)
+    parsed_holdings = []
+    for _, row in df.iterrows():
+        try:
+            ticker = str(row[ticker_col]).upper().strip()
+            shares = float(row[shares_col])
+            cost_basis = float(row[cost_col])
+            if ticker and not pd.isna(shares) and not pd.isna(cost_basis):
+                parsed_holdings.append({
+                    "ticker": ticker,
+                    "shares": shares,
+                    "cost_basis": cost_basis
+                })
+        except Exception:
+            continue
+            
+    if not parsed_holdings:
+        raise ValueError("No valid holdings could be parsed from the CSV.")
         
-    # 4. Save chunks to database
-    database.save_document_chunks(file_name, ticker, chunks)
-    print(f"  [+] Successfully indexed and saved {len(chunks)} document chunks in CockroachDB.")
+    overwrite_intent = False
+    prompt_lower = user_prompt.lower()
+    if any(k in prompt_lower for k in ["overwrite", "update", "replace", "set portfolio", "import", "load portfolio"]):
+        overwrite_intent = True
+        
+    return {
+        "holdings": parsed_holdings,
+        "overwrite_intent": overwrite_intent
+    }
 
+def extract_strategies_from_ips(file_name: str, doc_text: str):
+    """
+    Invokes Gemini to analyze the IPS text, extract qualitative strategy rules,
+    generates embeddings for them, and inserts them into user_strategies.
+    """
+    from agent.orchestrator import generate_ai_response
+    from services.vector_store import get_embedding_provider
+    
+    print(f"Extracting strategy rules from IPS PDF '{file_name}'...")
+    
+    system_instruction = (
+        "You are a professional Investment Operations Assistant. Your task is to analyze "
+        "the provided Investment Policy Statement (IPS) text and extract distinct, concrete "
+        "qualitative investment strategy rules or guidelines.\n\n"
+        "Rules should look like:\n"
+        "- 'Limit technology sector exposure to a maximum of 40% of total portfolio value.'\n"
+        "- 'Trim holdings in a single stock if its weight exceeds 15%.'\n"
+        "- 'Maintain at least 10% in liquid cash or short-term bonds.'\n\n"
+        "Extract ONLY the rules as a raw JSON list of strings (e.g. [\"Rule 1\", \"Rule 2\"]). "
+        "Do not include markdown formatting or explanations."
+    )
+    
+    prompt = f"IPS Document Name: {file_name}\n\nContent:\n{doc_text[:12000]}"
+    
+    try:
+        response_text = generate_ai_response(prompt, system_instruction=system_instruction)
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+        response_text = response_text.strip()
+        
+        rules = json.loads(response_text)
+        if isinstance(rules, list):
+            embed_provider = get_embedding_provider()
+            for rule in rules:
+                rule_text = rule.strip()
+                if rule_text:
+                    print(f"  [+] Extracted qualitative strategy: '{rule_text}'")
+                    embedding = embed_provider.get_embedding(rule_text)
+                    database.save_strategy(rule_text, embedding)
+    except Exception as e:
+        print(f"Failed to extract strategies from IPS: {e}")
+
+def _run_ingestion_job_thread(job_id: str, file_name: str, file_data: bytes, user_prompt: str, ticker: str = None):
+    """Internal target for background worker thread."""
+    try:
+        database.update_ingestion_job_status(job_id, 'extracting', 10)
+        
+        # 1. Compute SHA-256 Hash
+        hasher = hashlib.sha256()
+        hasher.update(file_data)
+        file_hash = hasher.hexdigest()
+        
+        # Check duplicate
+        existing_doc = database.get_document_by_hash(file_hash)
+        if existing_doc:
+            print(f"File '{file_name}' matches existing document hash. Reusing indexed document chunks.")
+            database.update_ingestion_job_status(job_id, 'completed', 100)
+            return
+            
+        file_type = "csv" if file_name.lower().endswith(".csv") else "pdf"
+        
+        # 2. Upload raw file to Supabase Storage
+        database.update_ingestion_job_status(job_id, 'extracting', 25)
+        storage_path = ""
+        if file_type == "pdf":
+            storage_path = upload_pdf_to_supabase(file_name, file_data)
+        
+        # Create Document entry
+        doc_id = database.create_document(file_name, file_type, file_hash, storage_path)
+        
+        # 3. Branching based on Ingestion Type
+        if file_type == "csv":
+            # CSV Ingestion Case
+            database.update_ingestion_job_status(job_id, 'chunking', 50)
+            res = ingest_portfolio_csv(file_name, file_data, user_prompt)
+            job_metadata = {
+                "holdings": res["holdings"],
+                "overwrite_intent": res["overwrite_intent"]
+            }
+            
+            # Persist CSV portfolio holdings details text in document_chunks for RAG capability
+            try:
+                csv_text_summary = f"Portfolio holdings from CSV file '{file_name}':\n"
+                for h in res["holdings"]:
+                    csv_text_summary += f"- Ticker: {h['ticker']}, Shares: {h['shares']}, Cost Basis: ${h['cost_basis']}\n"
+                
+                csv_chunk = {
+                    "chunk_index": 0,
+                    "chunk_text": csv_text_summary,
+                    "chunk_metadata": {
+                        "document_id": doc_id,
+                        "page_number": 1
+                    }
+                }
+                
+                from services.vector_store import get_embedding_provider
+                embed_provider = get_embedding_provider()
+                csv_chunk["embedding"] = embed_provider.get_embedding(csv_text_summary)
+                
+                database.save_document_chunks_batch(doc_id, None, [csv_chunk])
+                print(f"  [+] Saved CSV holdings summary to vector space for document ID {doc_id}.")
+            except Exception as e:
+                print(f"Warning: Failed to save CSV chunks to vector space: {e}")
+                
+            database.update_ingestion_job_status(
+                job_id, 
+                'completed' if not res["overwrite_intent"] else 'persisting', 
+                100, 
+                error_message=json.dumps(job_metadata)
+            )
+            
+        else:
+            # PDF Ingestion Cases
+            database.update_ingestion_job_status(job_id, 'chunking', 40)
+            chunks = process_pdf_into_chunks(file_data, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+            
+            if not chunks:
+                raise ValueError("No text extracted or chunked from PDF.")
+                
+            # Embeddings step
+            database.update_ingestion_job_status(job_id, 'embedding', 60)
+            from services.vector_store import get_embedding_provider
+            embed_provider = get_embedding_provider()
+            
+            # Batch embedding generation
+            chunk_texts = [c["chunk_text"] for c in chunks]
+            batch_size = config.BATCH_EMBEDDING_SIZE
+            all_embeddings = []
+            
+            for i in range(0, len(chunk_texts), batch_size):
+                batch_texts = chunk_texts[i:i+batch_size]
+                pct = 60 + int((i / len(chunk_texts)) * 25)
+                database.update_ingestion_job_status(job_id, 'embedding', pct)
+                embeddings = embed_provider.get_embeddings_batch(batch_texts)
+                all_embeddings.extend(embeddings)
+                
+            for idx, chunk in enumerate(chunks):
+                chunk["embedding"] = all_embeddings[idx]
+                
+            database.update_ingestion_job_status(job_id, 'persisting', 90)
+            
+            # Batch DB insert
+            database.save_document_chunks_batch(doc_id, ticker, chunks)
+            
+            # Strategy IPS check
+            is_ips = "ips" in file_name.lower() or "investment policy" in file_name.lower()
+            if is_ips:
+                full_text = "\n".join([c["chunk_text"] for c in chunks])
+                extract_strategies_from_ips(file_name, full_text)
+                
+            database.update_ingestion_job_status(job_id, 'completed', 100)
+            
+    except Exception as e:
+        print(f"Error in background ingestion worker: {e}")
+        database.update_ingestion_job_status(job_id, 'failed', 100, error_message=str(e))
+    finally:
+        with _active_jobs_lock:
+            _active_jobs.discard(job_id)
+
+def start_ingestion_job(job_id: str, file_name: str, file_data: bytes, user_prompt: str = "", ticker: str = None):
+    """Enforces thread-safe duplicate check and starts a background thread to process the ingestion job."""
+    with _active_jobs_lock:
+        if job_id in _active_jobs:
+            print(f"Worker for job '{job_id}' is already running. Skipping execution start.")
+            return
+        _active_jobs.add(job_id)
+        
+    # Launch worker thread
+    t = threading.Thread(
+        target=_run_ingestion_job_thread,
+        args=(job_id, file_name, file_data, user_prompt, ticker),
+        daemon=True
+    )
+    t.start()
+
+def ingest_pdf_transcript(file_name: str, file_data: bytes, ticker: str):
+    """Legacy interface maintained for backward compatibility inside test suites, running synchronously."""
+    # We construct a mock job ID and process synchronously
+    job_id = database.create_ingestion_job(file_name, "pdf")
+    _run_ingestion_job_thread(job_id, file_name, file_data, "", ticker)

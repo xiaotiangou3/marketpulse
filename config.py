@@ -27,6 +27,8 @@ ALPACA_PAPER = os.getenv("ALPACA_PAPER", "True").lower() in ("true", "1", "yes")
 
 EMBEDDING_MODEL = "gemini-embedding-001"
 GENERATIVE_MODEL = "gemini-3.1-flash-lite"
+BATCH_EMBEDDING_SIZE = 100
+DIRECT_CONTEXT_TOKEN_THRESHOLD = 1500
 
 # Document Chunking Settings
 CHUNK_SIZE = 1000
