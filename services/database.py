@@ -829,7 +829,6 @@ def price_polling_loop():
                         if price > 0.0:
                             save_stock_price(canonical_t, price, daily_change)
                             latest_prices[canonical_t] = {"price": price, "daily_change_pct": daily_change}
-                            print(f"  Saved price for {canonical_t}: ${price:.2f} ({daily_change:+.2f}%)")
                     except Exception as ex:
                         print(f"  Error polling price for {t}: {ex}")
                 
@@ -855,7 +854,6 @@ def price_polling_loop():
                     total_gain_loss_pct = (total_gain_loss / total_cost) * 100 if total_cost > 0 else 0.0
                     
                     save_portfolio_snapshot(total_value, total_gain_loss, total_gain_loss_pct)
-                    print(f"  [+] Logged snapshot: Value ${total_value:.2f}, Gain ${total_gain_loss:.2f} ({total_gain_loss_pct:+.2f}%)")
             else:
                 print("Portfolio is empty. Skipping price polling.")
         except Exception as e:

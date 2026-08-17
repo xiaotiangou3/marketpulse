@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 import boto3
 from tavily import TavilyClient
+import yfinance as yf
 import config
 
 def verify_cockroachdb():
@@ -84,6 +85,26 @@ def verify_tavily():
         print(f"  [-] Tavily Search API Connection failed: {e}")
         return False
 
+def verify_yfinance():
+    print("Testing Yahoo Finance Connection...")
+    try:
+        ticker = yf.Ticker("AAPL")
+        # Test fast info retrieval
+        price = ticker.fast_info.get("lastPrice")
+        if not price:
+            # Fallback to history close check
+            price = ticker.history(period="1d")["Close"].iloc[-1]
+        
+        if price and price > 0.0:
+            print(f"  [+] Yahoo Finance Connected successfully! AAPL price check: ${price:.2f}")
+            return True
+        else:
+            print("  [-] Yahoo Finance Connection returned invalid price.")
+            return False
+    except Exception as e:
+        print(f"  [-] Yahoo Finance Connection failed: {e}")
+        return False
+
 def main():
     print("==================================================")
     print("   MarketPulse AI Connection Verification Suite   ")
@@ -98,9 +119,10 @@ def main():
     gemini_success = verify_gemini()
     s3_success = verify_s3()
     tavily_success = verify_tavily()
+    yf_success = verify_yfinance()
     
     print("\n==================================================")
-    if cr_success and gemini_success and s3_success and tavily_success:
+    if cr_success and gemini_success and s3_success and tavily_success and yf_success:
         print("   ALL CONNECTIONS SUCCESSFUL! Ready to proceed.  ")
         print("==================================================")
         sys.exit(0)

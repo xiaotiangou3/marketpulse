@@ -78,6 +78,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Run connection checks once on first startup
+import os
+if not os.environ.get("MARKETPULSE_CONNECTIONS_CHECKED"):
+    os.environ["MARKETPULSE_CONNECTIONS_CHECKED"] = "true"
+    print("==================================================")
+    print("   Starting Connection Checks (Console Log Only)  ")
+    print("==================================================")
+    try:
+        from verify_connections import verify_cockroachdb, verify_gemini, verify_s3, verify_tavily, verify_yfinance
+        verify_cockroachdb()
+        verify_gemini()
+        verify_s3()
+        verify_tavily()
+        verify_yfinance()
+    except Exception as e:
+        print(f"Error executing startup connection checks: {e}")
+    print("==================================================\n")
+
 # Run database migrations on startup
 try:
     database.run_migrations()
@@ -1622,184 +1640,6 @@ def render_news_page():
         else:
             st.info("No news articles currently stored in CockroachDB matching filters. Select a ticker and click 'Refresh Latest News' above to fetch latest market data.")
 
-def render_developer_page():
-    st.header("🛠️ Developer Diagnostics")
-    st.markdown("Monitor real-time system connections, vector memory configurations, schema migrations, and LLM orchestration.")
-    st.markdown("---")
-    
-    tab1, tab2, tab3 = st.tabs(["🏥 System Health", "🧬 Vector Space & Router", "📜 Schema & Audit Logs"])
-    
-    with tab1:
-        st.subheader("Infrastructure Connections")
-        
-        # Check CockroachDB Connection & Version
-        db_status = "Disconnected"
-        db_version = "Unknown"
-        db_err = None
-        try:
-            conn = database.get_db_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT version();")
-                db_version = cur.fetchone()[0]
-            database.release_db_connection(conn)
-            db_status = "Connected"
-        except Exception as e:
-            db_err = str(e)
-        
-        # Check S3 Storage Connection
-        s3_status = "Disconnected"
-        s3_err = None
-        try:
-            import boto3
-            if not config.AWS_ACCESS_KEY_ID or not config.AWS_SECRET_ACCESS_KEY:
-                raise ValueError("Credentials not configured")
-            
-            session = boto3.Session(
-                aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
-                region_name=config.AWS_REGION
-            )
-            extra_kwargs = {}
-            if config.AWS_S3_ENDPOINT_URL:
-                extra_kwargs["endpoint_url"] = config.AWS_S3_ENDPOINT_URL
-            s3_client = session.client("s3", **extra_kwargs)
-            s3_client.head_bucket(Bucket=config.AWS_S3_BUCKET)
-            s3_status = "Connected"
-        except Exception as e:
-            s3_status = "Restricted / Offline"
-            s3_err = str(e)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(
-                f"""
-                <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
-                    <h4 style="margin: 0; color: #FFFFFF;">CockroachDB Serverless</h4>
-                    <p style="margin: 10px 0 0 0; font-size: 24px; font-weight: bold; color: {'#10B981' if db_status == 'Connected' else '#EF4444'};">
-                        {'🟢 Connected' if db_status == 'Connected' else '🔴 Disconnected'}
-                    </p>
-                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF; font-family: monospace; white-space: pre-wrap;">{db_version}</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            if db_err:
-                st.error(f"DB Connection Error: {db_err}")
-
-        with col2:
-            st.markdown(
-                f"""
-                <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
-                    <h4 style="margin: 0; color: #FFFFFF;">Amazon S3 Storage</h4>
-                    <p style="margin: 10px 0 0 0; font-size: 24px; font-weight: bold; color: {'#10B981' if s3_status == 'Connected' else '#F59E0B'};">
-                        {'🟢 Connected' if s3_status == 'Connected' else '🟡 Restricted / Offline'}
-                    </p>
-                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Access check via bucket head request</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            if s3_err:
-                st.warning(f"S3 Warning/Error: {s3_err}")
-        
-        st.markdown("---")
-        st.subheader("Generative AI & Models")
-        
-        m_col1, m_col2 = st.columns(2)
-        with m_col1:
-            st.markdown(
-                f"""
-                <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
-                    <h5 style="margin: 0; color: #9CA3AF;">Embedding Model</h5>
-                    <p style="margin: 10px 0 0 0; font-size: 20px; font-weight: bold; color: #00A8A8; font-family: monospace;">
-                        {config.EMBEDDING_MODEL}
-                    </p>
-                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Dimensions: 768</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        with m_col2:
-            st.markdown(
-                f"""
-                <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
-                    <h5 style="margin: 0; color: #9CA3AF;">Generative Model</h5>
-                    <p style="margin: 10px 0 0 0; font-size: 20px; font-weight: bold; color: #00A8A8; font-family: monospace;">
-                        {config.GENERATIVE_MODEL}
-                    </p>
-                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Provider: Gemini API</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    with tab2:
-        st.subheader("AI Chatbot Router Decisions")
-        if "last_router_output" in st.session_state:
-            st.markdown(
-                f"""
-                <div style="background-color: #111827; border-left: 4px solid #00A8A8; padding: 15px; border-radius: 4px; margin-bottom: 15px;">
-                    <h5 style="margin: 0; color: #00A8A8;">Last Session Routing Decision</h5>
-                    <p style="margin: 10px 0 5px 0;"><strong>Router Explanation:</strong> {st.session_state.last_router_output["explanation"]}</p>
-                    <p style="margin: 5px 0 0 0;"><strong>Resolved Actions:</strong> <code>{json.dumps(st.session_state.last_router_output["actions"])}</code></p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        else:
-            st.info("No chatbot session routed yet in this Streamlit session. Send a message to the AI Chatbot to see routing decisions.")
-        
-        st.markdown("---")
-        st.subheader("HNSW Cosine Similarity Query Executed")
-        st.markdown("Inspect how query vectors match stored database records. Uses cosine distance (`<=>` operator) on HNSW indexes.")
-        sql_example = """
-        SELECT strategy_id, strategy_text, (embedding <=> %s::VECTOR) AS distance
-        FROM user_strategies
-        ORDER BY distance ASC
-        LIMIT %s;
-        """
-        st.code(sql_example, language="sql")
-
-    with tab3:
-        st.subheader("Schema Migrations Applied")
-        try:
-            conn = database.get_db_connection()
-            with conn.cursor() as cur:
-                cur.execute("SELECT version, applied_at FROM schema_version ORDER BY version ASC;")
-                mig_rows = cur.fetchall()
-            database.release_db_connection(conn)
-            
-            # Render migrations nicely
-            mig_df = pd.DataFrame(mig_rows, columns=["Migration Version", "Applied At"])
-            st.dataframe(mig_df, use_container_width=True)
-        except Exception as e:
-            st.error("Unable to fetch migration logs.")
-        
-        st.markdown("---")
-        st.subheader("Database Research Audit Logs (Row-Level TTL active)")
-        try:
-            logs = database.get_research_logs()
-            if logs:
-                for idx, log in enumerate(logs[:10]):
-                    with st.expander(f"Log {idx+1}: {log['prompt_query'][:50]}... ({str(log['created_at'])[:19]})"):
-                        st.markdown(f"**Query**: `{log['prompt_query']}`")
-                        st.write(f"- Distance score of top strategy: `{log['vector_distance']}`")
-                        st.write(f"- News count: `{log['session_metadata'].get('news_sources_count', 'N/A')}`")
-                        st.write(f"- Latency: `{log['session_metadata'].get('execution_latency_sec', 'N/A')}s` | Model: `{log['generative_model']}`")
-                        st.markdown("**Generated Summary:**")
-                        st.info(log['generated_summary'])
-                        
-                        b_col1, b_col2 = st.columns(2)
-                        with b_col1:
-                            st.markdown("**Bull Perspective:**")
-                            st.success(log['bull_perspective'] or "N/A")
-                        with b_col2:
-                            st.markdown("**Bear Perspective:**")
-                            st.error(log['bear_perspective'] or "N/A")
-            else:
-                st.write("No audit logs saved yet.")
-        except Exception as e:
-            st.write(f"Error fetching audit trail: {e}")
 
 # ==========================================
 # MULTI-STRATEGY PAPER TRADING SANDBOX PAGE
@@ -2109,12 +1949,11 @@ def render_paper_trading_page():
 # PAGE ROUTING (NATIVE TABS)
 # ==========================================
 
-tab_portfolio, tab_chat, tab_news, tab_paper_trading, tab_diagnostics = st.tabs([
+tab_portfolio, tab_chat, tab_news, tab_paper_trading = st.tabs([
     "💼 Portfolio",
     "💬 Research Chat",
     "📰 Market News",
-    "🧪 Paper Trading Sandbox",
-    "🛠️ Diagnostics"
+    "🧪 Paper Trading Sandbox"
 ])
 
 with tab_portfolio:
@@ -2128,9 +1967,6 @@ with tab_news:
 
 with tab_paper_trading:
     render_paper_trading_page()
-
-with tab_diagnostics:
-    render_developer_page()
 
 
 
