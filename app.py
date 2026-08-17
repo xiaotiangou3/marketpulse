@@ -1881,7 +1881,7 @@ def render_paper_trading_page():
         )
         kpi4.metric(
             label="Bound Strategy",
-            value=f"{metrics.get('strategy_type', 'General').upper()}"
+            value=f"{(metrics.get('strategy_type') or 'General').upper()}"
         )
 
         st.markdown("---")

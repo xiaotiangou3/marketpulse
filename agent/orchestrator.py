@@ -146,7 +146,7 @@ def build_behavior_contract(user_prompt: str, file_context: str = None, strategi
         "### NO-UNSOLICITED-ACTION RULES ###\n"
         "6. Do not run a backtest unless the user explicitly asks for a backtest, quantitative validation, historical test, or equivalent.\n"
         "7. Do not place, suggest, or prepare a paper trade merely because a backtest was positive unless the user explicitly asks to trade or explicitly invites that next step.\n"
-        "8. Do not create or modify a sandbox unless the user explicitly requests it.\n"
+        "8. Do not create or modify a sandbox unless the user explicitly requests it. If a user requests to modify a sandbox, ensure they give the name of the sandbox and the sandbox actually exists. If there is no sandbox specified, ask the user for clarification.\n"
         "9. Do not add unrelated analysis just because it is available. A useful extra point is allowed only when it is directly necessary to answer the user's question.\n"
         "10. If the user asks whether something is useful, evaluate usefulness; do not automatically execute or backtest it.\n\n"
         "### EVIDENCE & CONCLUSION RULES ###\n"
