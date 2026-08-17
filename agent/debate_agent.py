@@ -144,3 +144,53 @@ def run_parallel_debate(ticker: str, holdings_str: str, news_str: str, strategy_
         "bear": bear
     }
 
+class StructuredDebate(BaseModel):
+    bull_points: List[str] = Field(description="A list of 3-5 concise, high-impact bullet points representing the Bull case catalysts.")
+    bear_points: List[str] = Field(description="A list of 3-5 concise, high-impact bullet points representing the Bear case risks.")
+    conclusion_which_is_better: str = Field(description="Objective assessment of which side (Bull or Bear) is more compelling and why.")
+    conclusion_next_steps: List[str] = Field(description="Clear, educational next steps for the user.")
+    conclusion_analysis: str = Field(description="A summary synthesis analysis matching the portfolio and strategy rules.")
+
+def synthesize_structured_debate(ticker: str, bull_perspective: str, bear_perspective: str) -> StructuredDebate:
+    """Compiles Bull and Bear perspectives into a structured format matching StructuredDebate."""
+    from .orchestrator import get_gemini_client
+    client = get_gemini_client()
+    
+    system_instruction = (
+        "You are the Chair of a Multi-Strategy Investment Committee.\n"
+        "Your role is to compile and synthesize opposing Bull and Bear perspectives on an asset.\n"
+        "Provide a clean structured summary matching the StructuredDebate schema. Make the bullet points concise."
+    )
+    prompt = f"""
+    Compile a structured debate summary for ticker: {ticker.upper()}
+    
+    ### DETAILED BULL PERSPECTIVE:
+    {bull_perspective}
+    
+    ### DETAILED BEAR PERSPECTIVE:
+    {bear_perspective}
+    """
+    
+    try:
+        response = client.models.generate_content(
+            model=config.GENERATIVE_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=StructuredDebate,
+                system_instruction=system_instruction,
+                temperature=0.2
+            )
+        )
+        return StructuredDebate.model_validate_json(response.text)
+    except Exception as e:
+        print(f"Error generating structured debate: {e}")
+        # Fallback
+        return StructuredDebate(
+            bull_points=["Failed to parse bull points"],
+            bear_points=["Failed to parse bear points"],
+            conclusion_which_is_better="Unable to determine",
+            conclusion_next_steps=["Check logs"],
+            conclusion_analysis="Error during debate synthesis"
+        )
+

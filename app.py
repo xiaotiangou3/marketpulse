@@ -838,6 +838,76 @@ def render_trade_receipt_card(trade_data: dict):
         
         st.caption("💡 *Track live positions, cash balance, and virtual equity in the 🧪 **Paper Trading Sandbox** tab.*")
 
+def render_debate_card(debate_data: dict):
+    """Renders a structured Bull vs. Bear debate card in a creative, side-by-side layout."""
+    if not debate_data:
+        return
+        
+    ticker = debate_data.get("ticker", "ASSET")
+    bull_points = debate_data.get("bull", [])
+    bear_points = debate_data.get("bear", [])
+    conclusion = debate_data.get("conclusion", {})
+    
+    with st.container(border=True):
+        st.markdown(f"### ⚔️ **Dual-Perspective Debate: {ticker}**")
+        st.markdown("---")
+        
+        col_bull, col_bear = st.columns(2)
+        
+        with col_bull:
+            st.markdown(
+                """
+                <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid #10B981; border-radius: 8px; padding: 10px 15px; margin-bottom: 10px;">
+                    <span style="color: #10B981; font-weight: bold; font-size: 1.1rem;">🟢 BULL PERSPECTIVE</span>
+                    <span style="color: #a7f3d0; font-size: 0.85rem; display: block; margin-top: 4px;">Upside Catalysts & Strategic Alignment</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            for pt in bull_points:
+                st.markdown(f"- {pt}")
+                
+        with col_bear:
+            st.markdown(
+                """
+                <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid #EF4444; border-radius: 8px; padding: 10px 15px; margin-bottom: 10px;">
+                    <span style="color: #EF4444; font-weight: bold; font-size: 1.1rem;">🔴 BEAR PERSPECTIVE</span>
+                    <span style="color: #fca5a5; font-size: 0.85rem; display: block; margin-top: 4px;">Downside Risks & Concentration Flags</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            for pt in bear_points:
+                st.markdown(f"- {pt}")
+                
+        st.markdown("---")
+        
+        # Conclusion box
+        st.markdown(
+            """
+            <div style="background: rgba(59, 130, 246, 0.12); border: 1px solid #3B82F6; border-radius: 8px; padding: 12px 18px; margin-top: 10px; margin-bottom: 10px;">
+                <span style="color: #3B82F6; font-weight: bold; font-size: 1.1rem;">🎯 CONCLUSION & RECOMMENDATION</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown(f"**Which side is more compelling?**")
+        st.markdown(conclusion.get("which_is_better", "N/A"))
+        st.markdown("")
+        
+        st.markdown(f"**Research Next Steps:**")
+        next_steps = conclusion.get("next_steps", [])
+        if isinstance(next_steps, list):
+            for ns in next_steps:
+                st.markdown(f"- {ns}")
+        else:
+            st.markdown(next_steps)
+        st.markdown("")
+        
+        st.markdown(f"**Summary Analysis:**")
+        st.markdown(conclusion.get("analysis", "N/A"))
+
 @st.fragment(run_every=5)
 def poll_ingestion_jobs_status():
     if not st.session_state.get("active_ingestion_jobs"):
@@ -964,6 +1034,8 @@ def render_chatbot_page():
                         render_backtest_card(msg["backtest_data"])
                     if msg.get("trade_data"):
                         render_trade_receipt_card(msg["trade_data"])
+                    if msg.get("debate_data"):
+                        render_debate_card(msg["debate_data"])
                     st.markdown(msg["content"])
                     
         # Show pending strategy confirmation form if active
@@ -1021,6 +1093,8 @@ def render_chatbot_page():
                                                 render_backtest_card(res_remaining["backtest_data"])
                                             if res_remaining.get("trade_data"):
                                                 render_trade_receipt_card(res_remaining["trade_data"])
+                                            if res_remaining.get("debate_data"):
+                                                render_debate_card(res_remaining["debate_data"])
                                                 
                                             final_content = res_remaining["response"]
                                             def stream_words(text: str):
@@ -1033,7 +1107,8 @@ def render_chatbot_page():
                                                 "role": "assistant",
                                                 "content": final_content,
                                                 "backtest_data": res_remaining.get("backtest_data"),
-                                                "trade_data": res_remaining.get("trade_data")
+                                                "trade_data": res_remaining.get("trade_data"),
+                                                "debate_data": res_remaining.get("debate_data")
                                             })
 
                                             try:
@@ -1443,6 +1518,8 @@ def render_chatbot_page():
                             render_backtest_card(res["backtest_data"])
                         if res.get("trade_data"):
                             render_trade_receipt_card(res["trade_data"])
+                        if res.get("debate_data"):
+                            render_debate_card(res["debate_data"])
                             
                         def stream_words(text: str):
                             words = text.split(" ")
@@ -1462,7 +1539,8 @@ def render_chatbot_page():
                             "role": "assistant", 
                             "content": res["response"],
                             "backtest_data": res.get("backtest_data"),
-                            "trade_data": res.get("trade_data")
+                            "trade_data": res.get("trade_data"),
+                            "debate_data": res.get("debate_data")
                         })
 
                         st.session_state.last_router_output = res["router"]

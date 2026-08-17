@@ -1101,7 +1101,8 @@ def conduct_portfolio_analysis(ticker, status_callback: Optional[Callable[[str, 
     print("Synthesizing debate cases...")
     if status_callback:
         status_callback(f"📝 Synthesizing debate cases for {ticker}...", "Evaluating bull/bear arguments against qualitative strategy guidelines...")
-    synthesis = agent.synthesize_debate(ticker, debate_res['bull'], debate_res['bear'])
+    structured_debate = agent.synthesize_structured_debate(ticker, debate_res['bull'], debate_res['bear'])
+    synthesis = structured_debate.conclusion_analysis
     
     elapsed_time = round(time.time() - start_time, 2)
     session_metadata = {
@@ -1130,6 +1131,16 @@ def conduct_portfolio_analysis(ticker, status_callback: Optional[Callable[[str, 
         "bull": debate_res['bull'],
         "bear": debate_res['bear'],
         "synthesis": synthesis,
+        "structured_debate": {
+            "ticker": ticker,
+            "bull": structured_debate.bull_points,
+            "bear": structured_debate.bear_points,
+            "conclusion": {
+                "which_is_better": structured_debate.conclusion_which_is_better,
+                "next_steps": structured_debate.conclusion_next_steps,
+                "analysis": structured_debate.conclusion_analysis
+            }
+        },
         "docs_context": docs_context
     }
 

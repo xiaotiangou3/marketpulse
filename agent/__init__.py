@@ -1,5 +1,5 @@
 from .orchestrator import RouterOutput, ActionItem, route_user_intent, resolve_strategy_match, generate_conversational_response, synthesize_chat_response, get_gemini_client, generate_ai_response
-from .debate_agent import generate_bull_perspective, generate_bear_perspective, synthesize_debate, run_parallel_debate, run_macro_stress_test
+from .debate_agent import generate_bull_perspective, generate_bear_perspective, synthesize_debate, run_parallel_debate, run_macro_stress_test, synthesize_structured_debate
 from .scanner_agent import generate_news_suggestions
 from .backtest import backtest_universal_strategy, backtest_sma_strategy, backtest_strategy_tool, get_last_backtest_result, set_last_backtest_result, clear_last_backtest_result
 from .trade_tools import execute_paper_trade_tool, create_sandbox_tool, get_last_trade_result, set_last_trade_result, clear_last_trade_result

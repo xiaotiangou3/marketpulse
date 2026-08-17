@@ -110,6 +110,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
     actions_run = []
     pending_strategy = None
     pending_portfolio_overwrite = None
+    debate_payload = None
     
     for a in router_output.actions:
         a_type = a.action_type.lower()
@@ -137,6 +138,7 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
                         f"{synthesis_text}\n"
                     )
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "success"})
+                    debate_payload = res.get("structured_debate")
                 except Exception as e:
                     results.append(f"=== Debate for {ticker} Failed ===\nError: {e}\n")
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "error", "error": str(e)})
@@ -443,7 +445,8 @@ def run_chatbot_session(user_prompt: str, uploaded_files: list = None, file_cont
         "pending_strategy": pending_strategy,
         "pending_portfolio_overwrite": pending_portfolio_overwrite,
         "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None,
-        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None
+        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None,
+        "debate_data": debate_payload
     }
 
 def run_remaining_actions(remaining_actions: list, original_prompt: str, status_callback: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
@@ -472,6 +475,7 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
         
     results = []
     actions_run = []
+    debate_payload = None
     
     for a_dict in remaining_actions:
         a_type = a_dict.get("action_type") if isinstance(a_dict, dict) else a_dict.action_type
@@ -493,6 +497,7 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
                         f"{synthesis_text}\n"
                     )
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "success"})
+                    debate_payload = res.get("structured_debate")
                 except Exception as e:
                     results.append(f"=== Debate for {ticker} Failed ===\nError: {e}\n")
                     actions_run.append({"type": "debate", "ticker": ticker, "status": "error", "error": str(e)})
@@ -688,7 +693,8 @@ def run_remaining_actions(remaining_actions: list, original_prompt: str, status_
         "response": final_response,
         "actions_run": actions_run,
         "backtest_data": bt_payload if (bt_payload and not bt_payload.get("error")) else None,
-        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None
+        "trade_data": trade_payload if (trade_payload and not trade_payload.get("error")) else None,
+        "debate_data": debate_payload
     }
 
 
