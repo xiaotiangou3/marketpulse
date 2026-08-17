@@ -2,7 +2,7 @@ import sys
 import psycopg2
 from google import genai
 from google.genai import types
-from supabase import create_client
+import boto3
 from tavily import TavilyClient
 import config
 
@@ -48,19 +48,26 @@ def verify_gemini():
         print(f"  [-] Gemini API Connection failed: {e}")
         return False
 
-def verify_supabase():
-    print("Testing Supabase Connection...")
-    if not config.SUPABASE_URL or not config.SUPABASE_KEY:
-        print("  [-] SUPABASE_URL or SUPABASE_KEY is not set.")
+def verify_s3():
+    print("Testing Amazon S3 Connection...")
+    if not config.AWS_ACCESS_KEY_ID or not config.AWS_SECRET_ACCESS_KEY:
+        print("  [-] AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set.")
         return False
     try:
-        supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-        # Try listing buckets to check storage access
-        buckets = supabase.storage.list_buckets()
-        print(f"  [+] Supabase Storage Connected successfully! Found {len(buckets)} buckets.")
+        session = boto3.Session(
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+            region_name=config.AWS_REGION
+        )
+        extra_kwargs = {}
+        if config.AWS_S3_ENDPOINT_URL:
+            extra_kwargs["endpoint_url"] = config.AWS_S3_ENDPOINT_URL
+        s3 = session.client("s3", **extra_kwargs)
+        s3.head_bucket(Bucket=config.AWS_S3_BUCKET)
+        print(f"  [+] Amazon S3 Connected successfully! Bucket '{config.AWS_S3_BUCKET}' is accessible.")
         return True
     except Exception as e:
-        print(f"  [-] Supabase Connection failed: {e}")
+        print(f"  [-] Amazon S3 Connection failed: {e}")
         return False
 
 def verify_tavily():
@@ -89,11 +96,11 @@ def main():
         
     cr_success = verify_cockroachdb()
     gemini_success = verify_gemini()
-    supabase_success = verify_supabase()
+    s3_success = verify_s3()
     tavily_success = verify_tavily()
     
     print("\n==================================================")
-    if cr_success and gemini_success and supabase_success and tavily_success:
+    if cr_success and gemini_success and s3_success and tavily_success:
         print("   ALL CONNECTIONS SUCCESSFUL! Ready to proceed.  ")
         print("==================================================")
         sys.exit(0)

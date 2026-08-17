@@ -5,49 +5,75 @@ import hashlib
 import json
 import threading
 import pandas as pd
-from supabase import create_client
+import boto3
+from botocore.exceptions import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
 
-_supabase_client = None
+_s3_client = None
 _active_jobs_lock = threading.Lock()
 _active_jobs = set()
 
-def get_supabase_client():
-    global _supabase_client
-    if _supabase_client is None:
-        if not config.SUPABASE_URL or not config.SUPABASE_KEY:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables.")
-        _supabase_client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-    return _supabase_client
+def get_s3_client():
+    global _s3_client
+    if _s3_client is None:
+        if not config.AWS_ACCESS_KEY_ID or not config.AWS_SECRET_ACCESS_KEY:
+            raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in environment variables.")
+        
+        session = boto3.Session(
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+            region_name=config.AWS_REGION
+        )
+        
+        extra_kwargs = {}
+        if config.AWS_S3_ENDPOINT_URL:
+            extra_kwargs["endpoint_url"] = config.AWS_S3_ENDPOINT_URL
+            
+        _s3_client = session.client("s3", **extra_kwargs)
+    return _s3_client
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True
 )
-def ensure_bucket_exists(bucket_name: str = "earnings-transcripts"):
-    """Validates if the target Supabase storage bucket is active, creating it if needed."""
-    client = get_supabase_client()
+def ensure_bucket_exists(bucket_name: str):
+    """Validates if the target S3 storage bucket exists, attempting to create it if needed."""
+    client = get_s3_client()
     try:
-        buckets = client.storage.list_buckets()
-        exists = any(b.name == bucket_name for b in buckets)
-        if not exists:
+        client.head_bucket(Bucket=bucket_name)
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code")
+        if error_code == "404":
             print(f"Bucket '{bucket_name}' not found. Attempting to create bucket...")
-            client.storage.create_bucket(bucket_name, options={"public": False})
-            print(f"Bucket '{bucket_name}' created successfully.")
+            try:
+                if config.AWS_REGION == "us-east-1":
+                    client.create_bucket(Bucket=bucket_name)
+                else:
+                    client.create_bucket(
+                        Bucket=bucket_name,
+                        CreateBucketConfiguration={"LocationConstraint": config.AWS_REGION}
+                    )
+                print(f"Bucket '{bucket_name}' created successfully.")
+            except Exception as create_err:
+                print(f"Warning: Could not create S3 bucket '{bucket_name}': {create_err}")
+                print("Assuming bucket exists or permissions will handle it on upload.")
+        else:
+            print(f"Warning: Could not head S3 bucket '{bucket_name}': {e}")
+            print("Assuming bucket exists or permissions will handle it on upload.")
     except Exception as e:
-        print(f"Warning: Could not list/create storage bucket '{bucket_name}': {e}")
+        print(f"Warning: Could not check S3 bucket '{bucket_name}': {e}")
         print("Assuming bucket exists or permissions will handle it on upload.")
 
-def upload_pdf_to_supabase(file_name: str, file_data: bytes, bucket_name: str = "earnings-transcripts") -> str:
-    """Uploads PDF data to Supabase Storage and returns the file storage path."""
+def upload_pdf_to_s3(file_name: str, file_data: bytes, bucket_name: str) -> str:
+    """Uploads PDF data to Amazon S3 Storage and returns the file storage path."""
     clean_name = file_name.replace(" ", "_")
     try:
-        client = get_supabase_client()
+        client = get_s3_client()
         ensure_bucket_exists(bucket_name)
         
-        print(f"Uploading file '{clean_name}' to Supabase bucket '{bucket_name}'...")
+        print(f"Uploading file '{clean_name}' to S3 bucket '{bucket_name}'...")
         
         @retry(
             stop=stop_after_attempt(3),
@@ -55,16 +81,17 @@ def upload_pdf_to_supabase(file_name: str, file_data: bytes, bucket_name: str = 
             reraise=True
         )
         def _do_upload():
-            client.storage.from_(bucket_name).upload(
-                path=clean_name,
-                file=file_data,
-                file_options={"upsert": "true", "content-type": "application/pdf"}
+            client.put_object(
+                Bucket=bucket_name,
+                Key=clean_name,
+                Body=file_data,
+                ContentType="application/pdf"
             )
         
         _do_upload()
-        return f"supabase://{bucket_name}/{clean_name}"
+        return f"s3://{bucket_name}/{clean_name}"
     except Exception as e:
-        print(f"Warning: Supabase upload failed due to storage policies or connectivity: {e}")
+        print(f"Warning: S3 upload failed due to storage policies or connectivity: {e}")
         print("Falling back to local reference.")
         return f"local://{clean_name}"
 
@@ -293,11 +320,11 @@ def _run_ingestion_job_thread(job_id: str, file_name: str, file_data: bytes, use
             
         file_type = "csv" if file_name.lower().endswith(".csv") else "pdf"
         
-        # 2. Upload raw file to Supabase Storage
+        # 2. Upload raw file to Amazon S3 Storage
         database.update_ingestion_job_status(job_id, 'extracting', 25)
         storage_path = ""
         if file_type == "pdf":
-            storage_path = upload_pdf_to_supabase(file_name, file_data)
+            storage_path = upload_pdf_to_s3(file_name, file_data, config.AWS_S3_BUCKET)
         
         # Create Document entry
         doc_id = database.create_document(file_name, file_type, file_hash, storage_path)

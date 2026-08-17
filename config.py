@@ -11,9 +11,12 @@ COCKROACH_DATABASE_URL = os.getenv("COCKROACH_DATABASE_URL")
 # Gemini API Config
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Supabase Storage Config
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# Amazon S3 Storage Config
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_S3_BUCKET = os.getenv("AWS_S3_BUCKET", "earnings-transcripts")
+AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
 
 # Tavily API Config (Optional fallback)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -46,10 +49,14 @@ if not COCKROACH_DATABASE_URL:
     missing_vars.append("COCKROACH_DATABASE_URL")
 if not GEMINI_API_KEY:
     missing_vars.append("GEMINI_API_KEY")
-if not SUPABASE_URL:
-    missing_vars.append("SUPABASE_URL")
-if not SUPABASE_KEY:
-    missing_vars.append("SUPABASE_KEY")
+if not AWS_ACCESS_KEY_ID:
+    missing_vars.append("AWS_ACCESS_KEY_ID")
+if not AWS_SECRET_ACCESS_KEY:
+    missing_vars.append("AWS_SECRET_ACCESS_KEY")
+if not AWS_REGION:
+    missing_vars.append("AWS_REGION")
+if not AWS_S3_BUCKET:
+    missing_vars.append("AWS_S3_BUCKET")
 
 if missing_vars:
     print(f"Error: Missing required environment variables: {', '.join(missing_vars)}", file=sys.stderr)

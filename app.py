@@ -1646,17 +1646,28 @@ def render_developer_page():
         except Exception as e:
             db_err = str(e)
         
-        # Check Supabase Storage Connection
-        supabase_status = "Disconnected"
-        supabase_err = None
+        # Check S3 Storage Connection
+        s3_status = "Disconnected"
+        s3_err = None
         try:
-            from supabase import create_client
-            supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-            supabase.storage.list_buckets()
-            supabase_status = "Connected"
+            import boto3
+            if not config.AWS_ACCESS_KEY_ID or not config.AWS_SECRET_ACCESS_KEY:
+                raise ValueError("Credentials not configured")
+            
+            session = boto3.Session(
+                aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+                region_name=config.AWS_REGION
+            )
+            extra_kwargs = {}
+            if config.AWS_S3_ENDPOINT_URL:
+                extra_kwargs["endpoint_url"] = config.AWS_S3_ENDPOINT_URL
+            s3_client = session.client("s3", **extra_kwargs)
+            s3_client.head_bucket(Bucket=config.AWS_S3_BUCKET)
+            s3_status = "Connected"
         except Exception as e:
-            supabase_status = "Policy Restricted / Offline"
-            supabase_err = str(e)
+            s3_status = "Restricted / Offline"
+            s3_err = str(e)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -1679,17 +1690,17 @@ def render_developer_page():
             st.markdown(
                 f"""
                 <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
-                    <h4 style="margin: 0; color: #FFFFFF;">Supabase Object Storage</h4>
-                    <p style="margin: 10px 0 0 0; font-size: 24px; font-weight: bold; color: {'#10B981' if supabase_status == 'Connected' else '#F59E0B'};">
-                        {'🟢 Connected' if supabase_status == 'Connected' else '🟡 Restricted / Offline'}
+                    <h4 style="margin: 0; color: #FFFFFF;">Amazon S3 Storage</h4>
+                    <p style="margin: 10px 0 0 0; font-size: 24px; font-weight: bold; color: {'#10B981' if s3_status == 'Connected' else '#F59E0B'};">
+                        {'🟢 Connected' if s3_status == 'Connected' else '🟡 Restricted / Offline'}
                     </p>
-                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Access check via bucket enumeration</p>
+                    <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Access check via bucket head request</p>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
-            if supabase_err:
-                st.warning(f"Supabase Warning/Error: {supabase_err}")
+            if s3_err:
+                st.warning(f"S3 Warning/Error: {s3_err}")
         
         st.markdown("---")
         st.subheader("Generative AI & Models")

@@ -163,7 +163,7 @@ def main():
         )
         print(f"  [+] Chatbot Response:\n{res['response']}")
         print(f"  [+] Actions resolved: {res['router']['actions']}")
-        # The upload will warn about Supabase RLS and proceed to process locally
+        # The upload will warn about S3 storage connection and proceed to process locally
         assert res['actions_run'][0]['status'] == "success"
         
         # Step 7: Test conversational fallback
