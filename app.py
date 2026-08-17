@@ -1,6 +1,7 @@
 import io
 import json
 import time
+import re
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -126,9 +127,12 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# FORMATTING HELPERS
-# ==========================================
+def escape_markdown(text: str) -> str:
+    """Escapes dollar signs in markdown to prevent KaTeX rendering errors in Streamlit."""
+    if not isinstance(text, str):
+        return text
+    # Escape any '$' that is not already escaped
+    return re.sub(r'(?<!\\)\$', r'\$', text)
 
 def format_currency(val: float, show_sign: bool = False) -> str:
     """Formats a float as currency. Handles negative signs correctly: -$1.00 instead of $-1.00."""
@@ -865,7 +869,7 @@ def render_debate_card(debate_data: dict):
                 unsafe_allow_html=True
             )
             for pt in bull_points:
-                st.markdown(f"- {pt}")
+                st.markdown(escape_markdown(f"- {pt}"))
                 
         with col_bear:
             st.markdown(
@@ -878,7 +882,7 @@ def render_debate_card(debate_data: dict):
                 unsafe_allow_html=True
             )
             for pt in bear_points:
-                st.markdown(f"- {pt}")
+                st.markdown(escape_markdown(f"- {pt}"))
                 
         st.markdown("---")
         
@@ -893,20 +897,20 @@ def render_debate_card(debate_data: dict):
         )
         
         st.markdown(f"**Which side is more compelling?**")
-        st.markdown(conclusion.get("which_is_better", "N/A"))
+        st.markdown(escape_markdown(conclusion.get("which_is_better", "N/A")))
         st.markdown("")
         
         st.markdown(f"**Research Next Steps:**")
         next_steps = conclusion.get("next_steps", [])
         if isinstance(next_steps, list):
             for ns in next_steps:
-                st.markdown(f"- {ns}")
+                st.markdown(escape_markdown(f"- {ns}"))
         else:
-            st.markdown(next_steps)
+            st.markdown(escape_markdown(next_steps))
         st.markdown("")
         
         st.markdown(f"**Summary Analysis:**")
-        st.markdown(conclusion.get("analysis", "N/A"))
+        st.markdown(escape_markdown(conclusion.get("analysis", "N/A")))
 
 @st.fragment(run_every=5)
 def poll_ingestion_jobs_status():
@@ -1036,7 +1040,7 @@ def render_chatbot_page():
                         render_trade_receipt_card(msg["trade_data"])
                     if msg.get("debate_data"):
                         render_debate_card(msg["debate_data"])
-                    st.markdown(msg["content"])
+                    st.markdown(escape_markdown(msg["content"]))
                     
         # Show pending strategy confirmation form if active
         if st.session_state.get("pending_strategy"):
@@ -1102,7 +1106,7 @@ def render_chatbot_page():
                                                 for i, word in enumerate(words):
                                                     yield word + (" " if i < len(words) - 1 else "")
                                                     time.sleep(0.008)
-                                            st.write_stream(stream_words(final_content))
+                                            st.write_stream(stream_words(escape_markdown(final_content)))
                                             st.session_state.chat_history.append({
                                                 "role": "assistant",
                                                 "content": final_content,
@@ -1494,7 +1498,7 @@ def render_chatbot_page():
             
             with chat_container:
                 with st.chat_message("user"):
-                    st.markdown(display_prompt)
+                    st.markdown(escape_markdown(display_prompt))
                 with st.chat_message("assistant"):
                     status_box = st.status("🧠 MarketPulse AI is initializing...", expanded=True)
                     def handle_status(label: str, detail: str = None, state: str = "running"):
@@ -1527,7 +1531,7 @@ def render_chatbot_page():
                                 yield word + (" " if i < len(words) - 1 else "")
                                 time.sleep(0.008)
                                 
-                        st.write_stream(stream_words(res["response"]))
+                        st.write_stream(stream_words(escape_markdown(res["response"])))
                         
                         try:
                             database.save_chat_message(role="assistant", content=res["response"])
@@ -1695,7 +1699,7 @@ def render_news_page():
                     with st.expander("AI Action Suggestions", expanded=False):
                         suggestions = item.get("action_suggestions")
                         if suggestions:
-                            st.markdown(suggestions)
+                            st.markdown(escape_markdown(suggestions))
                             st.markdown("---")
                             if st.button("🔄 Regenerate Suggestions", key=f"regen_{item['news_id']}", use_container_width=True):
                                 with st.spinner("Regenerating AI suggestions based on latest strategies..."):
