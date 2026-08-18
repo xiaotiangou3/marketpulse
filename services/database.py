@@ -34,6 +34,49 @@ def get_pool():
                 dsn=config.COCKROACH_DATABASE_URL
             )
         except Exception as e:
+            err_str = str(e)
+            if "sslmode" in err_str and "verify-full" in err_str:
+                print("Warning: sslmode 'verify-full' failed. Retrying with 'sslmode=require'...")
+                # Try fallback 1: sslmode=require
+                fallback_url = config.COCKROACH_DATABASE_URL
+                if "sslmode=verify-full" in fallback_url:
+                    fallback_url = fallback_url.replace("sslmode=verify-full", "sslmode=require")
+                elif "sslmode=verify_full" in fallback_url:
+                    fallback_url = fallback_url.replace("sslmode=verify_full", "sslmode=require")
+                
+                try:
+                    _pool = psycopg2.pool.ThreadedConnectionPool(
+                        minconn=1,
+                        maxconn=10,
+                        dsn=fallback_url
+                    )
+                    print("Successfully connected using fallback sslmode=require.")
+                    return _pool
+                except Exception as e2:
+                    print(f"Fallback with sslmode=require failed: {e2}. Trying with sslmode parameter removed...")
+                    
+                    # Try fallback 2: strip sslmode parameter entirely to allow libpq default negotiation
+                    import urllib.parse
+                    try:
+                        parsed = urllib.parse.urlparse(config.COCKROACH_DATABASE_URL)
+                        query = urllib.parse.parse_qs(parsed.query)
+                        query.pop("sslmode", None)
+                        # Rebuild query
+                        new_query = urllib.parse.urlencode(query, doseq=True)
+                        fallback_url_no_sslmode = urllib.parse.urlunparse((
+                            parsed.scheme, parsed.netloc, parsed.path,
+                            parsed.params, new_query, parsed.fragment
+                        ))
+                        _pool = psycopg2.pool.ThreadedConnectionPool(
+                            minconn=1,
+                            maxconn=10,
+                            dsn=fallback_url_no_sslmode
+                        )
+                        print("Successfully connected after stripping sslmode parameter.")
+                        return _pool
+                    except Exception as e3:
+                        print(f"Fallback without sslmode parameter failed: {e3}")
+            
             print(f"Error initializing database connection pool: {e}")
             raise e
     return _pool
