@@ -8,30 +8,7 @@ MarketPulse AI is an autonomous, context-aware financial research sentinel. It u
 
 The following Mermaid diagram illustrates the interaction between the User, the Streamlit frontend, the Agent Orchestrator, CockroachDB Serverless, Amazon S3, and external AI/data services:
 
-```mermaid
-graph TD
-    User([User]) <--> |Interacts| WebApp[Streamlit Frontend]
-    WebApp <--> |Session State & UI State| Orchestrator[Agent Orchestrator]
-    
-    subgraph AI Reasoning & Semantic Memory
-        Orchestrator <--> |Prompts & Struct JSON| Gemini[Gemini API]
-        Gemini --> |768d Vector Embeddings| VectorEngine[text-embedding-004]
-    end
-    
-    subgraph CockroachDB Serverless
-        Orchestrator <--> |ACID Transactions / CRUD| DBRelational[(Relational Tables)]
-        Orchestrator <--> |Cosine Similarity Queries| DBVector[(HNSW Vector Indexes)]
-        MCP[Managed MCP Server] -.-> |Safe Read-Only Queries| DBRelational
-    end
-    
-    subgraph Cloud Storage & External Data
-        Orchestrator --> |PDF Uploads / Archival| S3[Amazon S3 Bucket]
-        Orchestrator --> |Ticker Quotes & News| APIs[Yahoo Finance / Tavily APIs]
-    end
-    
-    DBRelational --- |user_holdings, user_strategies, paper_trades| DB[(CockroachDB Cluster)]
-    DBVector --- |idx_user_strategies_embedding, document_chunks| DB
-```
+![System Architecture](assets/architecture.png)
 
 ---
 
@@ -76,29 +53,7 @@ The AI Agent acts as the central intelligence engine, executing actions across t
 - **Duplicate Prevention**: Computes SHA-256 hashes of files before processing to prevent duplicate embeddings and database clutter.
 - **CSV Portfolio Parser**: Automatically maps columns from imported CSV files (handling common variants for symbols, quantities, and cost bases) to relational database formats.
 
-```mermaid
-graph TD
-    Upload[User Uploads PDF / CSV File] --> Hash[Compute SHA-256 Hash via Python hashlib]
-    Hash --> CheckDup{Hash Exists in CockroachDB 'documents'?}
-    CheckDup -->|Yes| EndDup[Skip Ingestion: Reuse existing document_chunks]
-    CheckDup -->|No| UploadS3[Upload raw file to S3 Bucket via boto3 API]
-    UploadS3 --> InsertDoc[Create record in CockroachDB 'documents' table via psycopg2]
-    InsertDoc --> SelectType{File Type?}
-    
-    SelectType -->|PDF| ExtractPDF[Extract text using pypdf library]
-    ExtractPDF --> Chunker[Recursive semantic splitting in Python: 1000char/200overlap]
-    Chunker --> GeminiEmbed[Call Gemini text-embedding-004 API]
-    GeminiEmbed --> InsertChunks[Save embeddings into CockroachDB 'document_chunks' HNSW table via psycopg2]
-    InsertChunks --> CheckIPS{Is Investment Policy Statement IPS?}
-    CheckIPS -->|Yes| ParseRules[Call Gemini 3.1 Flash API to extract strategic rules]
-    ParseRules --> InsertRules[Save rules as 768d HNSW embeddings in 'user_strategies' table via psycopg2]
-    ParseRules --> EndPDF[Ingestion complete]
-    CheckIPS -->|No| EndPDF
-    
-    SelectType -->|CSV| ParseCSV[Parse holdings: auto-map column headers via pandas]
-    ParseCSV --> OverwriteHoldings[Update CockroachDB 'user_holdings' table via psycopg2]
-    OverwriteHoldings --> EndCSV[CSV Ingestion complete]
-```
+![Context Ingestion Flow](assets/file_ingestion.png)
 
 ### 2. Reasoning & Analysis
 
@@ -106,87 +61,19 @@ graph TD
   - **Bull Agent**: Generates Catalysts, upside opportunities, and technical catalysts.
   - **Bear Agent**: Identifies concentration risks, macro headwinds, and strategy rule violations.
   
-  ```mermaid
-  graph TD
-      Prompt[User Prompt: e.g. Analyze AAPL] --> Orchestrator[Orchestrator parses request via Gemini 3.1 Flash API]
-      Orchestrator --> FetchData[Fetch holdings, strategy rules, news & document chunks via psycopg2, yfinance, & Tavily APIs]
-      FetchData --> SearchVector[Query HNSW vector indexes via SQL cosine similarity in psycopg2]
-      SearchVector --> ParallelAgents[Spawn Parallel Debate Agents via Gemini 2.5 Flash API]
-      
-      subgraph Parallel Agents Execution
-          Bull[Bull Agent: upside catalysts, growth factors, technical indicators]
-          Bear[Bear Agent: concentration risks, headwinds, strategy rule violations]
-      end
-      
-      ParallelAgents --> Bull
-      ParallelAgents --> Bear
-      
-      Bull --> CollectOutputs[Collect debates output]
-      Bear --> CollectOutputs
-      
-      CollectOutputs --> Synthesizer[Orchestrator compiles debates using Gemini 3.1 Flash API]
-      Synthesizer --> UI[Render side-by-side Bull vs Bear cards in Streamlit UI]
-  ```
+  ![Dual-Agent Debates Flow](assets/debate.png)
 
 - **Natural Language Macro Stress Testing**: Models macroeconomic scenarios against portfolio allocations, checking holdings, news context, and qualitative rules to generate a multi-dimensional risk analysis.
-  
-  ```mermaid
-  graph TD
-      Prompt[User NL Scenario: e.g. What if interest rates spike?] --> Orchestrator[Orchestrator parses request via Gemini 3.1 Flash API]
-      Orchestrator --> QueryDB[Query user holdings, current positions, and news context via psycopg2 & Tavily/Yahoo Finance APIs]
-      QueryDB --> StressTestAgent[Stress Test Agent analyzes macro impact via Gemini 2.5/3.1 Flash API]
-      StressTestAgent --> RunScenarios[Model economic shifts on sector exposures in Python]
-      RunScenarios --> CompileAssessment[Generate risk indicators & mitigation rules]
-      CompileAssessment --> Synthesizer[Synthesize natural language explanation using Gemini 3.1 Flash API]
-      Synthesizer --> UI[Display stress-test risk report in Streamlit UI]
-  ```
 
 - **Quantitative Backtesting**: Uses historical Yahoo Finance data to backtest strategies (e.g. SMA Crossovers, RSI triggers, Bollinger Bands) on a specific ticker, reporting return metrics, Sharpe ratios, and drawdowns.
   
-  ```mermaid
-  graph TD
-      Prompt[User Request: e.g. Run RSI backtest on TSLA] --> Orchestrator[Orchestrator parses parameters via Gemini 3.1 Flash API]
-      Orchestrator --> FetchCandles[Fetch historical daily candles via Yahoo Finance yfinance API]
-      FetchCandles --> ComputeIndicators[Compute quant indicators: SMA, RSI, Bollinger in pandas]
-      ComputeIndicators --> RunSimulation[Simulate trade triggers over specified timeframe in Python]
-      RunSimulation --> CalcMetrics[Calculate Total Return, Sharpe Ratio, Max Drawdown]
-      CalcMetrics --> GenerateLog[Generate trade logs]
-      GenerateLog --> Synthesizer[Orchestrator compiles explanation via Gemini 3.1 Flash API]
-      Synthesizer --> UI[Render performance metrics & transaction table in Streamlit UI]
-  ```
+  ![Quantitative Backtesting Flow](assets/backtest.png)
 
 ### 3. Strategy Simulation
 
 - **Sandbox Management**: Transactionally manages virtual sub-ledger accounts, allowing users to build and run test strategies.
-  
-  ```mermaid
-  graph TD
-      Prompt[User Request: e.g. Create new sandbox Growth Portfolio] --> Orchestrator[Orchestrator parses parameters via Gemini 3.1 Flash API]
-      Orchestrator --> ValidateLimit[Check active sandboxes count < 10 via SQL query]
-      ValidateLimit -->|Yes| InsertSandbox[Create transaction in CockroachDB 'sandboxes' table via psycopg2]
-      ValidateLimit -->|No| RaiseError[Raise limit error in Streamlit UI]
-      InsertSandbox --> ConfirmUI[Display sandbox creation success card in Streamlit UI]
-  ```
 
 - **Natural Language Paper Trading**: Interprets conversational buy/sell requests (e.g., *"Buy $5000 worth of AAPL in sandbox 2"*), calculates current market pricing, verifies available sandbox cash, and executes the simulated trade.
-  
-  ```mermaid
-  graph TD
-      Prompt[User Request: e.g. Buy 20 shares of NVDA in sandbox 1] --> Orchestrator[Orchestrator parses trade details via Gemini 3.1 Flash API]
-      Orchestrator --> VerifySandbox[Fetch sandbox cash balance from SQL 'sandboxes' table via psycopg2]
-      VerifySandbox --> FetchQuote[Fetch real-time price quote via Yahoo Finance yfinance API]
-      FetchQuote --> CalcCost[Compute total trade cost]
-      CalcCost --> VerifyFunds{Available Cash >= Trade Cost?}
-      
-      VerifyFunds -->|Yes| SQLTx[Start SQL Database Transaction on CockroachDB via psycopg2]
-      SQLTx --> UpdateCash[Update cash balance in SQL 'sandboxes' table]
-      SQLTx --> UpdateHoldings[Update/insert holdings in SQL 'sandbox_positions' table]
-      SQLTx --> LogTrade[Insert audit log into SQL 'paper_trades' table]
-      SQLTx --> CommitTx[Commit transaction]
-      CommitTx --> SuccessUI[Display simulated trade execution receipt in Streamlit UI]
-      
-      VerifyFunds -->|No| FailUI[Display insufficient funds warning in Streamlit UI]
-  ```
 
 ---
 
@@ -197,13 +84,15 @@ The agent processes natural language inputs directly inside the **Research Copil
 ### 1. Ingesting Files & Strategies
 To test file and strategy ingestion, upload a PDF or CSV in the file uploader and prompt the agent:
 - *"Read this earnings transcript and extract key catalysts for Apple."*
-- *"Ingest this Investment Policy Statement and update my portfolio strategy memory."*
+- *"Compare the strategies in this file to my own strategies."*
+
+> [!IMPORTANT]
+> To avoid exceeding the Google Gemini embedding API quota limit, please do not upload excessively large files during testing. It is highly recommended to use the lightweight sample files provided in the samples/ directory (such as `ips_sample.pdf`).
 
 ### 2. Dual-Agent Event Debates
 To trigger a Bull vs. Bear debate on a stock (this queries news, strategy compliance, and returns structured opposing cards side-by-side):
-- *"Should I buy Apple stock right now?"*
 - *"Analyze MSFT and give me the bull/bear case."*
-- *"/debate NVDA"* *(Explicit shortcut to trigger debate)*
+- *"Should I buy Apple stock right now?"*
 
 ### 3. Macro Stress Testing
 To stress test your portfolio allocations against hypothetical economic situations:
@@ -218,9 +107,27 @@ To backtest a quantitative strategy historically (supports RSI, MACD, SMA/EMA cr
 ### 5. Sandboxes & Paper Trading
 To interact with simulated sub-ledgers and execute trades conversationally:
 - *"Create a new sandbox named 'Tech Only' with $100,000 starting cash."*
-- *"Show me all my active strategy sandboxes."*
-- *"Buy 20 shares of NVIDIA in sandbox 1."*
-- *"Sell all my shares of Apple in sandbox 'Tech Only'."*
+
+---
+
+## External APIs & Integrations
+
+MarketPulse AI relies on several third-party APIs and libraries to fetch market data, execute search queries, and route conversational logic:
+
+### 1. Google Gemini API
+- **Model Orchestration**: Utilizes `gemini-3.1-flash-lite` for conversational responses, natural language parsing, and routing user intents (backtesting, stress-testing, trading).
+- **Semantic Memory**: Employs `text-embedding-001` to generate 768-dimensional embeddings for qualitative strategy guidelines and PDF document segments.
+
+### 2. Yahoo Finance (`yfinance`)
+- **Market Data Provider**: Retrieves real-time stock pricing, trading metrics, and quotes used during paper trade evaluations.
+- **Historical Bars**: Pulls historical daily price bars to feed indicator calculators (SMA, RSI, MACD, Bollinger Bands) during backtesting simulations.
+- **News Retrieval**: Serves as the primary source for caching stock market news.
+
+### 3. Tavily Search API
+- **Real-Time News Engine**: Serves as a high-fidelity web search tool, providing real-time macro news contexts and event updates as a fallback/supplement to Yahoo Finance news.
+
+### 4. Alpaca Paper Trading API
+- **Broker Simulation**: Connects to the Alpaca sandbox endpoint (using the `alpaca-py` SDK) to mock and simulate live trading positions and account cash balances as an alternative to the database sub-ledgers.
 
 ---
 
@@ -256,7 +163,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Amazon S3 Storage Credentials
 AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
-AWS_REGION=us-east-1
+AWS_REGION=your_aws_region
 AWS_S3_BUCKET=earnings-transcripts
 # Optional: For S3-compatible alternatives (e.g. MinIO, Cloudflare R2, LocalStack)
 # AWS_S3_ENDPOINT_URL=https://your-endpoint.com
