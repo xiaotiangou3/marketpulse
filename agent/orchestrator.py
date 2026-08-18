@@ -127,7 +127,7 @@ class RouterOutput(BaseModel):
 class ValidationResult(BaseModel):
     is_valid: bool = Field(description="True if the response has zero violations of instruction compliance, source grounding, or parameter preservation. False if any violation is present.")
     violations: List[str] = Field(default_factory=list, description="List of specific violations found, if any.")
-    corrected_response: str = Field(description="If is_valid is False, this MUST be the corrected response which removes all violations and is completely faithful. If is_valid is True, this should be the original response exactly as-is.")
+    corrected_response: str = Field(description="If is_valid is False, this MUST be the corrected response which removes all violations and is completely faithful. You MUST preserve all paragraph breaks, headings, lists, and markdown formatting from the original response using standard multiline formatting with normal newlines. If is_valid is True, this should be the original response exactly as-is.")
 
 def build_behavior_contract(user_prompt: str, file_context: str = None, strategies_str: str = "", contract: Optional[RequestContract] = None) -> str:
     """Shared behavioral contract used by the conversational and synthesis layers."""
@@ -205,7 +205,7 @@ def validate_response(
         "If you find ANY violation:\n"
         "- Set is_valid to False.\n"
         "- List the specific violations.\n"
-        "- In corrected_response, provide a rewritten version of the response that removes all violations, retains the original user constraints, and strictly adheres to the grounding rules.\n"
+        "- In corrected_response, provide a rewritten version of the response that removes all violations, retains the original user constraints, and strictly adheres to the grounding rules. You MUST preserve all paragraph breaks, headings, lists, and markdown formatting from the original response by using standard multiline formatting with normal newlines to separate sections.\n"
         "If the response is fully valid and has no violations:\n"
         "- Set is_valid to True.\n"
         "- Set corrected_response to the original response EXACTLY as-is (do not change a single character)."
@@ -474,7 +474,7 @@ def synthesize_chat_response(
         "8. If the user's question can be answered directly, do not ask an unnecessary follow-up question.\n"
         f"9. Allowed action types for this turn: {allowed}. This is a hard boundary.\n"
         "10. You do NOT have access to any tools in this synthesis phase. Do NOT attempt to run any tools or suggest code blocks that pretend to call tools.\n"
-        "11. If a Bull vs. Bear debate was run, do NOT duplicate the Bull/Bear bullet points or the next steps in your text response since they are rendered in the card above. Instead, provide ONLY a short, high-level summary or professional concluding remarks (1-2 paragraphs).\n\n"
+        "11. If a Bull vs. Bear debate was run, do NOT repeat yourself in your text response since they are rendered in the card above. Instead, provide ONLY a short, single-sentence statement that the Bull vs. Bear debate has been run for the ticker. Do not repeat any details or facts of the debate in this text response.\n\n"
         "### TOOL EXECUTION RESULTS SUMMARY ###\n"
         f"{results_summary}\n\n"
         "Return a clear, faithful, professional answer. Educational simulation only; not official financial advice."

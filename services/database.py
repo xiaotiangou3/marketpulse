@@ -621,17 +621,29 @@ def get_portfolio_snapshots(limit: int = 100) -> list[dict]:
         release_db_connection(conn)
 
 @db_retry
-def save_chat_message(role: str, content: str, user_id: str = 'demo_user') -> str:
+def save_chat_message(
+    role: str, 
+    content: str, 
+    user_id: str = 'demo_user',
+    backtest_data: dict = None,
+    trade_data: dict = None,
+    debate_data: dict = None
+) -> str:
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            import json
+            backtest_str = json.dumps(backtest_data) if backtest_data else None
+            trade_str = json.dumps(trade_data) if trade_data else None
+            debate_str = json.dumps(debate_data) if debate_data else None
+            
             cur.execute(
                 """
-                INSERT INTO chat_history (role, content, user_id)
-                VALUES (%s, %s, %s)
+                INSERT INTO chat_history (role, content, user_id, backtest_data, trade_data, debate_data)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING message_id;
                 """,
-                (role, content, user_id)
+                (role, content, user_id, backtest_str, trade_str, debate_str)
             )
             message_id = cur.fetchone()[0]
             conn.commit()
@@ -649,8 +661,8 @@ def get_chat_history(limit: int = 20, user_id: str = 'demo_user') -> list[dict]:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
                 """
-                SELECT role, content FROM (
-                    SELECT role, content, created_at FROM chat_history
+                SELECT role, content, backtest_data, trade_data, debate_data FROM (
+                    SELECT role, content, backtest_data, trade_data, debate_data, created_at FROM chat_history
                     WHERE user_id = %s
                     ORDER BY created_at DESC
                     LIMIT %s
@@ -659,7 +671,18 @@ def get_chat_history(limit: int = 20, user_id: str = 'demo_user') -> list[dict]:
                 """,
                 (user_id, limit)
             )
-            return [dict(row) for row in cur.fetchall()]
+            import json
+            rows = []
+            for row in cur.fetchall():
+                d = dict(row)
+                for col in ["backtest_data", "trade_data", "debate_data"]:
+                    if d.get(col) and isinstance(d[col], str):
+                        try:
+                            d[col] = json.loads(d[col])
+                        except Exception:
+                            pass
+                rows.append(d)
+            return rows
     finally:
         release_db_connection(conn)
 

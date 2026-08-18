@@ -990,7 +990,6 @@ def render_chatbot_page():
                     "💡 **Try typing `/` in the chat bar or asking:**\n"
                     "- *'/debate talk about the bull and bear catalysts for NVDA based on news'*\n"
                     "- *'/stress analyze what happens if interest rates rise 50bps'*\n"
-                    "- *'Add a strategy to limit tech to 30%'*\n"
                     "- *'/help' for full commands guide*"
                 )
                 database.save_chat_message(role="assistant", content=greeting)
@@ -1116,7 +1115,13 @@ def render_chatbot_page():
                                             })
 
                                             try:
-                                                database.save_chat_message(role="assistant", content=final_content)
+                                                database.save_chat_message(
+                                                    role="assistant", 
+                                                    content=final_content,
+                                                    backtest_data=res_remaining.get("backtest_data"),
+                                                    trade_data=res_remaining.get("trade_data"),
+                                                    debate_data=res_remaining.get("debate_data")
+                                                )
                                             except Exception as e:
                                                 print(f"Error persisting remaining actions response: {e}")
                                         except Exception as e:
@@ -1534,7 +1539,13 @@ def render_chatbot_page():
                         st.write_stream(stream_words(escape_markdown(res["response"])))
                         
                         try:
-                            database.save_chat_message(role="assistant", content=res["response"])
+                            database.save_chat_message(
+                                role="assistant", 
+                                content=res["response"],
+                                backtest_data=res.get("backtest_data"),
+                                trade_data=res.get("trade_data"),
+                                debate_data=res.get("debate_data")
+                            )
                         except Exception as e:
                             print(f"Error persisting assistant message: {e}")
                         
